@@ -402,6 +402,6 @@ adopt before there is code to lint.
 - Interface seams: [`docs/architecture/boundaries.md`](../architecture/boundaries.md) — the four interfaces
 - Event contract: [`docs/architecture/event-contract.md`](../architecture/event-contract.md) — triggers, labels, the query set
 - Remote execution service: [`docs/architecture/remote-contract.md`](../architecture/remote-contract.md) — `/health`, `budget`, timeouts
-- This decision: [ADR 0016](../adr/0016-idle-probed-at-the-harness.md), [ADR 0017](../adr/0017-the-artifact.md) — D31–D38
+- This decision: [ADR 0016](../adr/0016-idle-probed-at-the-harness.md), [ADR 0017](../adr/0017-the-artifact.md) — D31–D39
 - Harness seam: [ADR 0018](../adr/0018-framework-agnostic-means-never-naming-a-vendor.md) — D40, D41
 - Map: [#3](https://github.com/seppaleinen/idle-deck/issues/3) · Backlog: [#10](https://github.com/seppaleinen/idle-deck/issues/10)
