@@ -112,13 +112,16 @@ Value object. Provenance.
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `event_type` | string | yes | Tracker-agnostic, e.g. "label applied". |
-| `dedupe_key` | string | yes | Anchors webhook redelivery idempotency. |
-| `received_at` | timestamp | yes | |
+| `event_type` | string | yes | Tracker-agnostic. Closed vocabulary per tracker: GitHub uses `issue.opened`, `issue.labeled:<label>`, `schedule.sweep`. |
+| `dedupe_key` | string | yes | A **stable resource key**, anchoring ingestion idempotency. |
+| `received_at` | timestamp | yes | When the daemon observed the condition. |
 
 **Why not a first-class `Event` entity.** A single-user MVP has no inbox to drain, and the
 deny-by-default allowlist already bounds the blast radius. A value object is nearly free and makes
-the idempotency question in the event-contract ticket answerable from stored data.
+ingestion idempotency answerable from stored data. The event contract confirmed the instinct from the
+other side: idle-deck polls, so it observes *state* rather than *events* — its per-repository
+watermark is adapter state, deliberately not a domain entity, because it records what was **skipped**,
+and `TriggeredBy` records what caused a task that **exists**.
 
 ### `TrackerRef`
 
@@ -264,7 +267,10 @@ Stated explicitly so the next person does not helpfully add it back.
 6. **Language and interfaces.** Go, the adapters, method signatures, the `Base*` naming question
    (D18). All belong to the architecture boundaries ticket.
 7. **GitHub specifics.** Webhook delivery, signature verification, concrete label strings. The
-   ontology says "tracker event", not "webhook".
+   ontology says "tracker event", not "webhook" — and idle-deck does not use webhooks at all. Decided
+   in [`docs/architecture/event-contract.md`](architecture/event-contract.md)
+   ([D28](https://github.com/seppaleinen/idle-deck/blob/main/AGENTS.md),
+   [D29](https://github.com/seppaleinen/idle-deck/blob/main/AGENTS.md)).
 8. **Merge policy.** D22 says idle-deck never merges. The ontology has no opinion on what happens
    after a pull request exists, because there is no pull-request entity — only an artifact pointing
    at one.
@@ -279,8 +285,8 @@ rule, otherwise it becomes fiction:
 > A concept belongs here if it is a *thing that exists or will exist in the system*, not merely a
 > thing the MVP has not built yet.
 
-- **In, despite the MVP not building it:** `P3` sweeps. A P3 task is a real task; the missing piece
-  is its *trigger*, which is a fog item, not an ontology gap.
+- **In, despite the MVP not building it:** `P3` sweeps. A P3 task is a real task, and the event
+  contract gave it a trigger (a local scheduler). What a sweep *looks for* is policy, not ontology.
 - **Out, despite seeming relevant:** cost *policy* (no behaviour exists to model), multi-worker
   concurrency (what a worker is has not been decided).
 
@@ -326,21 +332,29 @@ What was kept, reworded, and dropped — and why.
 
 Recorded so they are visible rather than assumed away.
 
-- **P0 and P3 have no trigger.** Both tiers exist in the model; nothing produces them. This is a
-  gap in the event contract, not in the ontology.
+- **Every tier has a trigger — resolved.** P0 and P3 used to exist in the model with nothing producing
+  them. [GitHub event contract #9](https://github.com/seppaleinen/idle-deck/issues/9) settled the
+  triggers: `idle-hotfix` (P0), issue creation (P1), `idle-ready` (P2), a local scheduler (P3), and
+  `idle-redo` for a redefinition (D28/D29, [ADR
+  0015](architecture/event-contract.md)). The `Event` entity stayed unnecessary — polling observes
+  state, so a per-repository watermark is adapter state, not domain.
 - **The workspace-ownership contradiction is resolved.** The #1 mapping flagged that
   `remote_session_id` may need a different home if the workspace turned out to be local. [Remote
   execution service contract #8](https://github.com/seppaleinen/idle-deck/issues/8) settled it: **the
-  workspace lives on the remote** (D27, [ADR 0014](docs/adr/0014-remote-execution-service-contract.md));
+  workspace lives on the remote** (D27, [ADR 0014](adr/0014-remote-execution-service-contract.md));
   `remote_session_id` stays as-is and equals the remote's `run_id`.
-- **Sweep policy.** What a sweep looks for, and whether it may ever open a PR, is undecided.
+- **Sweep policy.** What a sweep looks for, and whether it may ever open a PR, is undecided. The
+  trigger exists; the job does not.
 - **Cancellation.** `aborted` is reserved. The reserved outcome is named; the feature is not designed.
+  Consequently **closing a GitHub issue does not cancel its task** — `TaskState` has nowhere to put
+  "dropped", and changing a closed value set is a migration (see the event contract).
 
 ---
 
 ## Related
 
-- [`AGENTS.md`](../AGENTS.md) — recorded decisions, `D1`–`D23`.
+- [`AGENTS.md`](../AGENTS.md) — recorded decisions, `D1`–`D29`.
 - [Wayfinder map #3](https://github.com/seppaleinen/idle-deck/issues/3) — the live plan.
 - [Architecture boundaries](https://github.com/seppaleinen/idle-deck/issues/6) — the four interfaces.
 - [Remote execution service contract](https://github.com/seppaleinen/idle-deck/issues/8) — I8's enforcer.
+- [GitHub event contract](architecture/event-contract.md) — triggers, tier derivation, label vocabulary.

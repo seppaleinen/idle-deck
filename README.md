@@ -10,7 +10,7 @@ back with a draft pull request. The point is not a chatbot you wait on — it is
 working after you close the laptop lid.
 
 ```
-  GitHub event ──▶ tracker adapter ──▶ priority queue ──▶ worker daemon ──▶ harness adapter
+  GitHub poll ──▶ tracker adapter ──▶ priority queue ──▶ worker daemon ──▶ harness adapter
                                                                         (remote inference)
                           ▲                                                      │
                           └────────── comment / label / draft PR ◀────────────────┘
@@ -28,7 +28,7 @@ Five moving parts, each behind a small interface with exactly one real implement
 
 | Part | MVP implementation | What it does |
 |---|---|---|
-| **Tracker adapter** | GitHub | Turns tracker events into tasks; writes comments and labels back |
+| **Tracker adapter** | GitHub | Polls for trigger conditions, turns them into tasks; writes comments and labels back |
 | **Priority queue** | SQLite | Orders work by tier, survives daemon restarts, leases running tasks |
 | **Worker daemon** | Go, one worker | Runs the loop: dequeue → dispatch → report → repeat |
 | **Harness adapter** | Remote HTTP service | Sends role + prompt + budget; polls a remote execution service that owns the workspace and returns typed artifacts |
@@ -53,18 +53,21 @@ not the bottleneck ([D5](https://github.com/seppaleinen/idle-deck/blob/main/AGEN
 
 | Tier | Meaning | Trigger | Result | Default timeout |
 |---|---|---|---|---|
-| **P0** | Hotfix | TBD — the original handover never says | Draft PR, preempts whatever is running | — |
+| **P0** | Hotfix | `idle-hotfix` label | Draft PR, preempts whatever is running | — |
 | **P1** | Spec clarification | New issue created | Checklist comment on the issue | 15 min |
-| **P2** | Feature implementation | `status: ready` label | Draft pull request | 3 hr |
-| **P3** | Idle sweep | TBD | Yields when higher-priority work arrives | — |
+| **P2** | Feature implementation | `idle-ready` label | Draft pull request | 3 hr |
+| **P3** | Idle sweep | A local scheduler, when there is idle capacity | Yields when higher-priority work arrives | — |
 
-P0 and P3 have no defined trigger yet. That gap is tracked, not papered over — see
-[GitHub event contract](https://github.com/seppaleinen/idle-deck/issues/9).
+Every tier has a trigger, and the four label names are one collision-safe vocabulary: they all start
+with `idle-` so idle-deck can never hijack a repository's own `ready` label and silently spawn runs.
+idle-deck **polls** — it has no webhook receiver, so there is nothing to expose and no signature to
+verify. What a P3 sweep actually looks for is still open policy; only its trigger is settled. See the
+[event contract](docs/architecture/event-contract.md).
 
 ### When a task fails
 
 Two automated retries. A third failure escalates: the workspace is preserved to `debug/<task_id>`,
-diagnostics are posted as a comment, `status: needs-human` is applied, and the task leaves the queue.
+diagnostics are posted as a comment, `idle-needs-human` is applied, and the task leaves the queue.
 A killed or preempted run counts as a retryable failure, not a success
 ([D14](https://github.com/seppaleinen/idle-deck/blob/main/AGENTS.md)).
 
@@ -92,10 +95,11 @@ The intended shape, when it exists:
   ([D23](https://github.com/seppaleinen/idle-deck/blob/main/AGENTS.md)).
 
 A day in the life, once built: you open an issue and idle-deck's P1 tier posts a clarification
-checklist back within minutes. You answer it, apply `status: ready`, and go to bed. You wake up to a
+checklist back within minutes. You answer it, apply `idle-ready`, and go to bed. You wake up to a
 Draft PR and a comment explaining what the agent did. You review it, request changes, and merge it
-yourself. If it went wrong three times, you get a `status: needs-human` label and a debug branch
-instead of a silent failure.
+yourself. If it went wrong three times, you get an `idle-needs-human` label and a debug branch
+instead of a silent failure — and a fresh `idle-redo` label tells idle-deck to try again, as a new
+task that inherits the debug branch.
 
 ## For developers
 
@@ -130,9 +134,11 @@ The map has **two locks**, in order:
 2. **An execution-ready backlog.** Issues specified well enough that an implementation session starts
    without making a further decision.
 
-The current frontier is three tickets: [Ontology baseline](https://github.com/seppaleinen/idle-deck/issues/5),
-[Decision record](https://github.com/seppaleinen/idle-deck/issues/7), and — newly available once the
-tracker semantics are confirmed — the next layer of the architecture.
+The frontier moves, so it is read from [map #3](https://github.com/seppaleinen/idle-deck/issues/3)
+rather than restated here. What is left before the backlog can be sliced is the operator surface
+([#11](https://github.com/seppaleinen/idle-deck/issues/11)) and the framework-agnosticism check
+([#12](https://github.com/seppaleinen/idle-deck/issues/12)), then
+[the MVP backlog](https://github.com/seppaleinen/idle-deck/issues/10) itself.
 
 ### Stack
 

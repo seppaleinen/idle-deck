@@ -128,7 +128,7 @@ they were defined — is exactly what this prevents. When CI lands (#11), this b
 | [0004](0004-never-name-a-model.md) | idle-deck never names a model | accepted (from D6) |
 | [0005](0005-one-harness-adapter.md) | Exactly one harness adapter in the MVP | accepted (from D7) |
 | [0006](0006-models-on-a-separate-server.md) | Models run on a server separate from the workstation | accepted (from D20) |
-| [0007](0007-multi-repo-event-driven.md) | Multi-repo, event-driven, deny-by-default allowlist | accepted (from D12) |
+| [0007](0007-multi-repo-event-driven.md) | Multi-repo, event-driven, deny-by-default allowlist | superseded by [0015](0015-github-event-contract.md) |
 | [0008](0008-minimal-interfaces-one-implementation.md) | Minimal interfaces, one concrete implementation each | accepted (from D13) |
 | [0009](0009-two-retries-then-escalate.md) | Two automated retries, then escalate | accepted (from D14) |
 | [0010](0010-go.md) | Go 1.27 | accepted (from D9) |
@@ -136,13 +136,21 @@ they were defined — is exactly what this prevents. When CI lands (#11), this b
 | [0012](0012-tracker-split.md) | Tracker split: inbound parser and outbound writer are separate interfaces | accepted (from D25) |
 | [0013](0013-harness-lifecycle.md) | Harness interface is execution lifecycle only; workspace ownership deferred to #8 | accepted (from D26) |
 | [0014](0014-remote-execution-service-contract.md) | Remote execution service contract: workspace is remote, contract is typed and pull-based | accepted (from D27) |
+| [0015](0015-github-event-contract.md) | GitHub event contract: idle-deck polls, labels trigger tiers, dedupe is a stable resource key | accepted (from D28, D29, D30) |
 
-## Next real supersession
+## The first real supersession
 
-The supersede path has been **confirmed intact** — not yet exercised. [Architecture boundaries
-#6](https://github.com/seppaleinen/idle-deck/issues/6) **confirmed D18** (Go interface naming,
+The supersede path is now **exercised**. [GitHub event contract
+#9](https://github.com/seppaleinen/idle-deck/issues/9) chose polling, which falsified ADR 0007's
+"the repository comes from the webhook's own origin" — so 0007 is `superseded` and 0015 carries the
+decision forward, with 0007's body untouched and its deny-by-default intent preserved in D30. Table
+tier, D12 → D30, in the same move.
+
+Two earlier candidates passed without becoming supersessions, which is worth recording as evidence the
+rule is not trigger-happy: [Architecture boundaries
+#6](https://github.com/seppaleinen/idle-deck/issues/6) **confirmed** D18 (Go interface naming,
 `Harness` not `BaseHarness`) rather than replacing it, and [Remote execution service
 contract #8](https://github.com/seppaleinen/idle-deck/issues/8) decided the workspace question
 *under* the harness interface (D27/ADR 0014) instead of changing it — ADR 0013 still stands
-unchanged. The first real supersession is still to come; the ADR-tier decision most likely to be
-tested is the [queue lease](0011-queue-lease.md) when a second queue implementation is considered.
+unchanged. The ADR-tier decision most likely to be tested next is the [queue
+lease](0011-queue-lease.md), when a second queue implementation is considered.

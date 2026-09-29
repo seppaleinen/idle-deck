@@ -65,10 +65,13 @@ pointer. Nothing is silently rewritten. The only mutable field on an ADR is its 
 | id | Decision | Rationale |
 |---|---|---|
 | **D13** | **Minimal interfaces, one concrete implementation each**: GitHub tracker, SQLite queue, one remote harness. | [ADR 0008](docs/adr/0008-minimal-interfaces-one-implementation.md) |
-| **D12** | **Multi-repo, event-driven.** The repository comes from the webhook's own origin. Deny-by-default allowlist. | [ADR 0007](docs/adr/0007-multi-repo-event-driven.md) |
-| **D14** | **Two automated retries**, then escalate: preserve the debug branch, comment diagnostics, apply `status: needs-human`, drop from queue. | [ADR 0009](docs/adr/0009-two-retries-then-escalate.md) |
+| **D12** *(superseded)* | ~~Multi-repo, event-driven. The repository comes from the webhook's own origin. Deny-by-default allowlist.~~ Mechanism replaced by **D30**; deny-by-default intent unchanged. | [ADR 0007](docs/adr/0007-multi-repo-event-driven.md) → superseded by [ADR 0015](docs/adr/0015-github-event-contract.md) |
+| **D30** | **Multi-repo, config-driven polling.** The repository is the **configured target**, not an inbound event's origin. Deny-by-default allowlist, **checked at ingestion** (I1). | [ADR 0015](docs/adr/0015-github-event-contract.md). idle-deck polls, so it *names* the repos it reads — the trust boundary is a config list, not a filter on hostile traffic. |
+| **D14** | **Two automated retries**, then escalate: preserve the debug branch, comment diagnostics, apply the needs-human label (string in **D29**), drop from queue. | [ADR 0009](docs/adr/0009-two-retries-then-escalate.md) |
 | **D17** | `TaskItem.timeout_seconds` **overrides** the tier default when set. A killed or preempted run counts as a retryable failure. | Explicit beats implicit. Timeouts are load-bearing. |
 | **D16** | With one worker, a **P0 aborts the running P2** and takes the slot. Aborted runs follow normal retry/escalation. | Makes "immediate preemption" real at `max_concurrent_jobs: 1`. |
+| **D28** | **The event contract**: idle-deck **polls** (60s, conditional requests, no inbound surface, no signature to verify); one watermark per repo seeded at first observation; every tier has a trigger; **dedupe is a stable resource key**; the trigger label is removed on any terminal state; the prompt is the issue's title and body verbatim; closing an issue does nothing. | [ADR 0015](docs/adr/0015-github-event-contract.md). Contract in [`docs/architecture/event-contract.md`](docs/architecture/event-contract.md). |
+| **D29** | **Label vocabulary**: `idle-hotfix`, `idle-ready`, `idle-redo`, `idle-needs-human`. Lowercase, hyphens, no space/colon/slash, all `idle-`-prefixed. | [ADR 0015](docs/adr/0015-github-event-contract.md). The prefix is **collision safety**, not style: a bare `ready` would hijack a repo's own label vocabulary and silently spawn agent runs. Normalises D14's `status: needs-human` literal; D14's behaviour is untouched. |
 
 ### Naming and lifecycle conventions
 
@@ -102,8 +105,16 @@ pointer. Nothing is silently rewritten. The only mutable field on an ADR is its 
   `Task` + `TaskAttempt`; `repository_url` becomes a `Repository` entity; idle, provenance, and task
   lineage are additions. Retry counts and tier timeouts are policy and stayed out. The document
   carries a kept/reworded/dropped mapping for every part of #1, with reasons.
-- **P0 and P3 have no trigger.** Both tiers exist in the ontology; nothing produces them. A gap in the
-  event contract, not the ontology — [#9](https://github.com/seppaleinen/idle-deck/issues/9).
+- **The event contract is locked.** [#9](https://github.com/seppaleinen/idle-deck/issues/9) — idle-deck
+  **polls** every 60s with no inbound surface (D28, [ADR 0015](docs/adr/0015-github-event-contract.md),
+  contract at `docs/architecture/event-contract.md`): one watermark per repo seeded at first
+  observation, the configured repo list is the allowlist (D30), a stable resource dedupe key, the
+  trigger label removed on any terminal state, and the prompt is the issue's title and body verbatim.
+  **Every tier now has a trigger** — `idle-hotfix` (P0), issue creation (P1), `idle-ready` (P2), a
+  local scheduler (P3), `idle-redo` (redefinition); labels are D29. Still open: what a P3 *sweep*
+  looks for (trigger settled, content not), cost/rate-limit policy, secrets lifecycle, live
+  cancellation, and label colours — fog onto the operator surface
+  ([#11](https://github.com/seppaleinen/idle-deck/issues/11)) and the #10 adapter spec.
 - **The remote contract is locked.** [#8](https://github.com/seppaleinen/idle-deck/issues/8) —
   **the workspace lives on the remote** (D27, [ADR 0014](docs/adr/0014-remote-execution-service-contract.md),
   wire contract at `docs/architecture/remote-contract.md`): typed results, idempotency by

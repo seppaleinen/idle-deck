@@ -19,15 +19,15 @@ HTTP execution service. A `Base*` prefix names nothing in this codebase; interfa
 behaviour (D18).
 
 ```
-  GitHub event ──▶ TrackerSource.Parse ──▶ ingress ──▶ Queue.Enqueue
+  GitHub poll ──▶ TrackerSource.Parse ──▶ ingress ──▶ Queue.Enqueue
                                                         │
   worker loop ─── Queue.Dequeue (lease) ──▶ Harness.Start ──▶ Harness.Result
-                    │  ▲                                      │
-                    ▼  │                                      ▼
-                Queue.Ack/Nack                          (role + artifacts)
-                    │
-                    ▼
-            TrackerSink.Comment / SetLabels
+                     │  ▲                                      │
+                     ▼  │                                      ▼
+                 Queue.Ack/Nack                          (role + artifacts)
+                     │
+                     ▼
+             TrackerSink.Comment / SetLabels
 ```
 
 ---
@@ -59,8 +59,10 @@ type TrackerSink interface {
 
 - `Parse` enforces **I1** — the originating `Repository` must be `allowlisted`; otherwise it returns
   a non-retryable ingestion error. The allowlist gate lives here, at ingestion, never later.
-- `Parse` fills `TriggeredBy.dedupe_key` from the event's delivery id, so the event-contract ticket
-  (#9) can make redelivery idempotent from stored data.
+- `Parse` fills `TriggeredBy.dedupe_key` from the observed resource, so ingestion is idempotent from
+  stored data. #9 settled the shape: a **stable resource key** (`github:issue:<repo>:<number>:<trigger>`),
+  because polling observes state rather than events, so re-observation is the normal case. There is no
+  delivery id and none is needed.
 - The **ingress handler** (core app code, not an adapter) calls `Parse` then `Queue.Enqueue`. The
   tracker never touches the queue; the two seams meet only in the core.
 - `Parse` must **never** write to the tracker (no comments, no labels, no PRs).
@@ -68,8 +70,7 @@ type TrackerSink interface {
   a failed `Comment` is logged and retried by the worker's retry policy, not by the sink.
 - **PR production is not a tracker method.** A succeeded P2 attempt has a `pull_request` artifact
   (I4), enforcer = harness adapter on return — the harness returns the artifact, and opening the PR
-  happens harness-side. If #8 ever lands on a fully local workspace, the seam change is one added
-  method, not a redesign.
+  happens harness-side — permanently, since #8 settled that the workspace is remote (D27/ADR 0014).
 - MVP implementation: **one GitHub type** satisfies both interfaces (methods `ParseHandler`,
   `CommentIssue`, `SetIssueLabels` wired to the GitHub API).
 
@@ -116,8 +117,8 @@ type Queue interface {
 - **Preemption (D16):** the worker selects on `Events`. When an event shows a tier above the running
   tier, the worker: `Harness.Abort(run)` → `Nack(lease, preempted)` → `Dequeue` the higher item →
   start it. With N workers the broadcast lets the lowest-priority running worker preempt itself.
-- `Enqueue` is **idempotent per `dedupe_key`** — the concrete queue ignores a redelivered task whose
-  key it has already seen (fact-finding for #9).
+- **Enqueue is idempotent per `dedupe_key`** — the concrete queue ignores a task whose key it has
+  already seen. Settled by #9: the key is a stable resource key, so re-observing a condition is free.
 - MVP implementation: **SQLite** with an `attempts` and `tasks` table, a transaction to claim the
   lease, and an in-process notification channel on `Enqueue`.
 
@@ -126,7 +127,7 @@ type Queue interface {
 The harness is a **remote execution service** (D7, D20; one JSON/HTTP adapter). Its interface is
 **pure lifecycle**: start, abort, collect. No workspace preparation, no local git operations — the
 original `BaseHarness` bundled two incompatible architectures into one name, and the split is what
-lets #8 settle workspace ownership without redesigning the seam. Decision:
+let #8 settle workspace ownership without redesigning the seam. Decision:
 [ADR 0013](../adr/0013-harness-lifecycle.md).
 
 ```go
@@ -165,9 +166,9 @@ type RunResult struct {
   `Abort` is the **cancellation contract**: a running attempt is abortable via its session id (I8).
 - `Result` is **terminal and single-shot**; the worker calls it exactly once. It returns artifacts as
   **data** — the harness does not reach back into idle-deck and idle-deck does not read the remote
-  filesystem. *Who physically produces the branch / opens the PR* — the harness remotely, or the core
-  locally — is **#8's workspace-ownership decision**, and this interface forecloses neither. PR
-  production stays harness-side per I4 regardless.
+  filesystem. *Who physically produces the branch / opens the PR* was #8's workspace-ownership
+  decision, and it answered **the harness, remotely** (D27/ADR 0014): the remote owns checkout, git,
+  and Draft PR production. This interface foreclosed neither answer; it now forecloses the local one.
 - **`preserve_debug_state` is not a harness method.** I5's enforcer is already "Worker, at
   escalation": the worker produces the `branch` artifact with `branch_purpose = debug` from what the
   harness returned, not by asking the harness to do git.
@@ -224,7 +225,7 @@ type IdlePolicy interface {
 | `TrackerSource` | Write to the tracker; touch the queue; enforce anything but I1. |
 | `TrackerSink` | Parse events; own retry policy (worker owns retries). |
 | `Queue` | Name models; run the task; decide policy (I6 retry policy lives in the worker); lose a task on lease expiry. |
-| `Harness` | Touch idle-deck's local filesystem through the interface; accept model names (D6); assume a local workspace (that is #8's call). |
+| `Harness` | Touch idle-deck's local filesystem through the interface; accept model names (D6); assume a local workspace (settled: the workspace is remote, D27). |
 | Worker | Enforce any invariant via a queue that does not lease; run multiple tasks against one lease. |
 | `IdlePolicy` | Fake idle when the probe fails (error ≠ idle). |
 
@@ -234,9 +235,9 @@ type IdlePolicy interface {
 
 | Seam | MVP implementation | Backlog ticket |
 |---|---|---|
-| Tracker | One GitHub type: `ParseHandler`, `CommentIssue`, `SetIssueLabels` | #10 |
+| Tracker | One GitHub type: `ParseHandler`, `CommentIssue`, `SetIssueLabels` | #10 (contract: [`event-contract.md`](event-contract.md)) |
 | Queue | SQLite, transactional lease + in-process event channel | #10 |
-| Harness | One remote JSON/HTTP adapter | #10 (contract: #8) |
+| Harness | One remote JSON/HTTP adapter | #10 (contract: [`remote-contract.md`](remote-contract.md)) |
 | Worker | Go daemon, one worker loop (`max_concurrent_jobs: 1`) | #10 |
 | IdlePolicy | Probe against the inference server | #10 |
 
@@ -246,5 +247,5 @@ type IdlePolicy interface {
 - Adapter count / minimal interfaces: [ADR 0008](../adr/0008-minimal-interfaces-one-implementation.md)
 - Retry/escalation: [ADR 0009](../adr/0009-two-retries-then-escalate.md)
 - Remote harness: [ADR 0005](../adr/0005-one-harness-adapter.md), [ADR 0006](../adr/0006-models-on-a-separate-server.md)
-- Remote contract (workspace ownership, next): [Remote execution service contract #8](https://github.com/seppaleinen/idle-deck/issues/8)
-- Event contract (triggers, tier derivation, labels): [GitHub event contract #9](https://github.com/seppaleinen/idle-deck/issues/9)
+- Remote contract (workspace ownership, locked): [`remote-contract.md`](remote-contract.md), [ADR 0014](../adr/0014-remote-execution-service-contract.md)
+- Event contract (delivery, triggers, tier derivation, label vocabulary, locked): [`event-contract.md`](event-contract.md), [ADR 0015](../adr/0015-github-event-contract.md)

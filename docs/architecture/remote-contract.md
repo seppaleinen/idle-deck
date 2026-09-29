@@ -6,8 +6,12 @@ interface ([ADR 0013](../adr/0013-harness-lifecycle.md), D26). It pins, in order
 where the workspace lives, transport/auth, idempotency, cancellation, progress, result typing, the
 error taxonomy, and one worked example per result shape.
 
-**Status:** draft-as-decision (prototype ticket #8). It is binding for the MVP harness adapter
-(backlog ticket #10); a deviation is a new decision.
+**Status:** locked by [Remote execution service contract
+#8](https://github.com/seppaleinen/idle-deck/issues/8) (D27, [ADR
+0014](../adr/0014-remote-execution-service-contract.md)). It is binding for the MVP harness adapter
+(backlog ticket #10); a deviation is a new decision. Label names in the worked examples follow
+[D29](https://github.com/seppaleinen/idle-deck/blob/main/AGENTS.md) — `idle-ready`, not `status: ready`
+— as fixed by [GitHub event contract #9](https://github.com/seppaleinen/idle-deck/issues/9).
 
 ---
 
@@ -260,7 +264,7 @@ comment artifact's uri is recorded as written). I4 doesn't apply (P1, not P2).
 
 ### 8b. P2 — feature implementation → `pull_request` artifact
 
-`status: ready` label applied → P2, `role: do`, default timeout 10800s (3 hr).
+`idle-ready` label applied → P2, `role: do`, default timeout 10800s (3 hr).
 
 ```http
 POST /v1/runs

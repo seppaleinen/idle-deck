@@ -1,7 +1,7 @@
 ---
 Title:   Multi-repo, event-driven, deny-by-default allowlist
-Status:  accepted
-Supersedes: —
+Status:  superseded
+Superseded by: 0015
 Related: D12, I1
 Source:  #3 charting
 ---
