@@ -55,7 +55,7 @@ Source:  <ticket/PR>       ← the discussion that resolved it
 |---|---|
 | `Status:` | **Mutable by design.** Flips to `superseded` with a `Superseded by: NNNN` line when a newer ADR replaces it. That flip is its own commit. |
 | `Superseded by:` | **Added** by that same flip. It is the mechanism, not an exception to the rule. |
-| `Related:` | **Correctable.** It is a navigational index, not a claim — a wrong pointer sends a reader to an irrelevant decision and asserts nothing false. Corrected in its own commit, so the diff is the record. |
+| `Related:` | **Correctable.** It is a navigational index, not a claim — a wrong pointer sends a reader to an irrelevant decision and asserts nothing false. Corrected in its own commit, so the diff is the record. An ADR lists the **D-id(s) it was accepted from first**, then related D-ids, then invariants, then ADR numbers. |
 | `Title:`, `Supersedes:`, `Source:` | **Immutable.** Title changes what the record is called, `Supersedes:` is the supersession's own assertion, and `Source:` is provenance. |
 | `## Decision` onward | **Immutable.** The whole of the argument below the header. |
 
@@ -132,7 +132,22 @@ comm -23 /tmp/cited /tmp/defined   # must be empty
 `--include=AGENTS.md` grep matches row-start bold ids only, not plain citations.)
 
 Fail if any id appears in `/tmp/cited` but not `/tmp/defined`. The D10/D11 defect — ids cited before
-they were defined — is exactly what this prevents. When CI lands (#11), this becomes a CI job.
+they were defined — is exactly what this prevents. It is a required CI gate per
+[ADR 0017](0017-the-artifact.md) §10.
+
+**That check proves existence, not correctness, and this record has been bitten by the difference
+twice.** A `budget` citation named D36 when it meant D37 — D36 *existed*, so the check passed while
+the document was wrong. And ADR 0011–0016 plus 0018 each omitted the D-id they were accepted from:
+every id they cited resolved, and every one was still an incomplete pointer. So a second check,
+cheap and mechanical:
+
+```sh
+# every ADR names the D-id it was accepted from, and names it first
+grep -H '^Related:' docs/adr/[0-9]*.md
+```
+
+The first id of each line must match that ADR's "accepted (from …)" in the log table below.
+Recorded because six tickets' worth of silence from the first check read as approval.
 
 ## ADR log
 

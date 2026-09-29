@@ -2,7 +2,7 @@
 Title:   GitHub event contract: idle-deck polls, labels trigger tiers, dedupe is a stable resource key
 Status:  accepted
 Supersedes: 0007
-Related: D12, D13, D14, D16, D17, D19, D22, D23, D24, D25, D27, I1, I9, I10, I11, 0011, 0012, 0014
+Related: D28, D29, D30, D12, D13, D14, D16, D17, D19, D22, D23, D24, D25, D27, I1, I9, I10, I11, 0011, 0012, 0014
 Source:  #9 GitHub event contract
 ---
 

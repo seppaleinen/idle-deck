@@ -2,7 +2,7 @@
 Title:   Queue lease semantics: dequeue is a lease, never a pop
 Status:  accepted
 Supersedes: —
-Related: D14, D16, D17, I6, I7, 0009
+Related: D24, D14, D16, D17, I6, I7, 0009
 Source:  #6 Architecture boundaries
 ---
 

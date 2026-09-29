@@ -2,7 +2,7 @@
 Title:   Harness interface is execution lifecycle only; workspace ownership deferred to #8
 Status:  accepted
 Supersedes: —
-Related: D6, D7, D20, I8, I4, I5, 0004, 0005, 0006
+Related: D26, D6, D7, D20, I8, I4, I5, 0004, 0005, 0006
 Source:  #6 Architecture boundaries
 ---
 

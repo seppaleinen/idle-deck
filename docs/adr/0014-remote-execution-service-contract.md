@@ -2,7 +2,7 @@
 Title:   Remote execution service contract: workspace is remote, contract is typed and pull-based
 Status:  accepted
 Supersedes: —
-Related: D7, D20, D26, D24, D21, D17, I4, I5, I7, I8, 0005, 0006, 0013
+Related: D27, D7, D20, D26, D24, D21, D17, I4, I5, I7, I8, 0005, 0006, 0013
 Source:  #8 Remote execution service contract
 ---
 

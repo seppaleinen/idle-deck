@@ -2,7 +2,7 @@
 Title:   Tracker split: inbound parser and outbound writer are separate interfaces
 Status:  accepted
 Supersedes: —
-Related: D13, I1, I4, 0008
+Related: D25, D13, I1, I4, 0008
 Source:  #6 Architecture boundaries
 ---
 

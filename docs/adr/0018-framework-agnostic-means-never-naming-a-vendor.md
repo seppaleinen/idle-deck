@@ -2,7 +2,7 @@
 Title:   "Framework-agnostic" means never naming a model, provider, or vendor — and the seam is proved by a conformance suite, not a second adapter
 Status:  accepted
 Supersedes: —
-Related: D6, D7, D13, D26, D27, I4, I5, I8, 0004, 0005, 0008, 0013, 0014
+Related: D40, D41, D6, D7, D13, D26, D27, I4, I5, I8, 0004, 0005, 0008, 0013, 0014
 Source:  #12 Is framework-agnostic honest with one adapter?
 ---
 
