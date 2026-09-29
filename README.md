@@ -32,21 +32,32 @@ Five moving parts, each behind a small interface with exactly one real implement
 | **Priority queue** | SQLite | Orders work by tier, survives daemon restarts, leases running tasks |
 | **Worker daemon** | Go, one worker | Runs the loop: dequeue → dispatch → report → repeat |
 | **Harness adapter** | Remote HTTP service | Sends role + prompt + budget; polls a remote execution service that owns the workspace and returns typed artifacts |
-| **Idle probe** | Against the inference server | If the model answers, the engine is considered idle |
+| **Idle probe** | The harness's `GET /health` | If it answers — reporting **model reachability**, not process liveness — the engine is considered idle |
 
 ### Two ideas worth understanding
 
-**idle-deck never names a model.** It passes a *role* — `plan`, `do`, or `sweep` — plus a budget and
-a timeout, and the harness decides which model fills that role. Which model is the best planner is the
-harness's problem, and it changes monthly. This also means model routing is a configuration concern
-rather than a hardcoded table, and it is why issue #1's "Brain vs Worker" model split is gone
-([D6](https://github.com/seppaleinen/idle-deck/blob/main/AGENTS.md)).
+**idle-deck never names a model, a provider, or a vendor.** It passes a *role* — `plan`, `do`, or
+`sweep` — plus a budget and a timeout, and the harness decides which model fills that role. Which
+model is the best planner is the harness's problem, and it changes monthly. This also means model
+routing is a configuration concern rather than a hardcoded table, and it is why issue #1's "Brain vs
+Worker" model split is gone ([D6](https://github.com/seppaleinen/idle-deck/blob/main/AGENTS.md),
+[D40](https://github.com/seppaleinen/idle-deck/blob/main/AGENTS.md)).
+
+That is exactly what "framework-agnostic" means here, and it is deliberately a smaller claim than it
+sounds. It is a property of the request's *shape* — the fields are a role, a budget, a timeout, and
+refs, so there is nowhere for a model name to go. It is **not** a claim that any harness can be
+dropped in: the MVP ships one adapter, and instead of promising pluggability it cannot show, it ships
+a **conformance suite** — nine client-observable cases every adapter must pass against the wire
+contract — and defers a second adapter behind a named trigger list
+([D41](https://github.com/seppaleinen/idle-deck/blob/main/AGENTS.md)).
 
 **Idle is a signal, not a vibe.** The project's name suggests watching for a quiet machine. It
-doesn't. idle-deck asks the inference server whether it is reachable; if it answers, the engine is
-considered idle and work can proceed. No macOS power heuristics, no CPU-threshold guessing, no
+doesn't. idle-deck asks the harness's `GET /health` whether a model is reachable; if it answers, the
+engine is considered idle and work can proceed. One endpoint, one credential, and it must report
+*reachability* rather than process liveness — a harness can be alive with the model down, and a
+liveness ping would certify that as idle. No macOS power heuristics, no CPU-threshold guessing, no
 "activity monitor" module — and because the models run on a separate machine, idle-deck's own host is
-not the bottleneck ([D5](https://github.com/seppaleinen/idle-deck/blob/main/AGENTS.md),
+not the bottleneck ([D31](https://github.com/seppaleinen/idle-deck/blob/main/AGENTS.md),
 [D20](https://github.com/seppaleinen/idle-deck/blob/main/AGENTS.md)).
 
 ### Priority tiers
@@ -101,6 +112,9 @@ The intended shape, when it exists:
 - **Tokens come from the environment and nowhere else.** No `.env` file, no secrets written to the
   database, rotation is rotate-and-restart
   ([D36](https://github.com/seppaleinen/idle-deck/blob/main/AGENTS.md)).
+- **`budget` is a generation-token ceiling, not a dollar amount** — per role, because idle-deck cannot
+  see what the remote is billed, so there is no global spend cap
+  ([D37](https://github.com/seppaleinen/idle-deck/blob/main/AGENTS.md)).
 
 A day in the life, once built: you open an issue and idle-deck's P1 tier posts a clarification
 checklist back within minutes. You answer it, apply `idle-ready`, and go to bed. You wake up to a
@@ -143,10 +157,11 @@ The map has **two locks**, in order:
    without making a further decision.
 
 The frontier moves, so it is read from [map #3](https://github.com/seppaleinen/idle-deck/issues/3)
-rather than restated here. What is left before the backlog can be sliced is the operator surface
+rather than restated here. The operator surface
 ([#11](https://github.com/seppaleinen/idle-deck/issues/11)) and the framework-agnosticism check
-([#12](https://github.com/seppaleinen/idle-deck/issues/12)), then
-[the MVP backlog](https://github.com/seppaleinen/idle-deck/issues/10) itself.
+([#12](https://github.com/seppaleinen/idle-deck/issues/12)) are both closed; what is left before the
+backlog can be sliced is [what a P3 sweep does](https://github.com/seppaleinen/idle-deck/issues/13),
+then [the MVP backlog](https://github.com/seppaleinen/idle-deck/issues/10) itself.
 
 ### Stack
 

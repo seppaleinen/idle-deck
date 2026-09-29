@@ -159,14 +159,14 @@ override one value for one run without editing anything.
 | `IDLE_DECK_TIER_TIMEOUT_PLAN` | `900` (15 min) | remote contract §8a |
 | `IDLE_DECK_TIER_TIMEOUT_DO` | `10800` (3 hr) | remote contract §8b |
 | `IDLE_DECK_TIER_TIMEOUT_SWEEP` | `3600` (1 hr) | remote contract §8c |
-| `IDLE_DECK_TIER_TIMEOUT_HOTFIX` | `1800` (30 min) | D36 |
+| `IDLE_DECK_TIER_TIMEOUT_HOTFIX` | `1800` (30 min) | D37 |
 | `IDLE_DECK_BUDGET_PLAN` | `5000` | remote contract §8a |
 | `IDLE_DECK_BUDGET_DO` | `100000` | remote contract §8b |
 | `IDLE_DECK_BUDGET_SWEEP` | `20000` | remote contract §8c |
-| `IDLE_DECK_BUDGET_HOTFIX` | `50000` | D36 |
+| `IDLE_DECK_BUDGET_HOTFIX` | `50000` | D37 |
 | `IDLE_DECK_GITHUB_API` | `https://api.github.com` | also serves GitHub Enterprise |
-| `IDLE_DECK_RETRY_BACKOFF_INITIAL` | `30s` | D36 |
-| `IDLE_DECK_RETRY_BACKOFF_MAX` | `10m` | D36 |
+| `IDLE_DECK_RETRY_BACKOFF_INITIAL` | `30s` | D37 |
+| `IDLE_DECK_RETRY_BACKOFF_MAX` | `10m` | D37 |
 
 `IDLE_DECK_GITHUB_API` is **not a test-only affordance**. Pointing the tracker adapter at a different
 API base is exactly what GitHub Enterprise requires, so it earns its place on its own merits; §9 then
@@ -327,8 +327,9 @@ This exercises the **real adapters** — URL building, pagination, the `pull_req
 conditional requests, watermark advancement, the wire outcome mapping — rather than a
 `TrackerSource` implementation that only a developer ever runs and which therefore never tests the
 seam it was built to test. A second `TrackerSource` was considered and rejected for exactly that
-reason: it would be the second implementation #12 is asking about, except one that exists only
-under a test.
+reason: it would be the second implementation [#12](https://github.com/seppaleinen/idle-deck/issues/12)
+weighed, except one that exists only under a test — and that question is now answered (D40/D41,
+[ADR 0018](../adr/0018-framework-agnostic-means-never-naming-a-vendor.md)).
 
 ```bash
 IDLE_DECK_POLL_INTERVAL=2s \
@@ -349,11 +350,19 @@ a P2 run returns a `pull_request` artifact and the trigger label is removed → 
 `idle-needs-human` is applied and a debug branch preserved → `idle-redo` produces a new task with
 `derived_from` set and a fresh retry budget.
 
-Two notes on what the stubs do and do not prove. The stub harness is a genuinely different execution
-model from a real remote service, so it is also the first honest evidence for [#12]'s
-framework-agnosticism question. And the `since`-composes-with-`labels` assumption #9 flagged can be
-exercised against a stub — though what that verifies is the *adapter's* handling of the behaviour,
-not GitHub's, which is why #10's adapter spec still owes a real check.
+Two notes on what the stubs do and do not prove.
+
+**The harness stub speaks the same wire contract as a real remote service, by construction — so it is
+the same execution model, not a different one.** It exercises the real adapter (URL building, status
+polling, abort, the outcome→`AttemptOutcome` mapping) against a server it controls the answers of. It
+is evidence that the adapter is correct; it is **not** evidence that a second, structurally different
+implementation would fit the `Harness` interface, which is what
+[#12](https://github.com/seppaleinen/idle-deck/issues/12) was about. That gap is closed by the
+**conformance suite** (D41), not by a second stub — see §11.
+
+And the `since`-composes-with-`labels` assumption #9 flagged can be exercised against a stub —
+though what that verifies is the *adapter's* handling of the behaviour, not GitHub's, which is why
+#10's adapter spec still owes a real check.
 
 ## 10. CI
 
@@ -381,6 +390,11 @@ adopt before there is code to lint.
 - **What a P3 sweep actually does** — the trigger and its plumbing are here (a configured
   placeholder prompt, a period bucket); the *job* is its own ticket.
 - **Live cancellation and a `stop`/`requeue` surface** — post-MVP by the ontology's own cut.
+- **A second harness adapter, and SSE** — the MVP ships one adapter and makes no pluggability claim
+  (D40). A second is gated on a named trigger list, and the **conformance suite** (D41) is what
+  obliges an adapter to exist at all. Neither is on the operator surface: they are harness-contract
+  concerns, specified in [`docs/architecture/remote-contract.md`](../architecture/remote-contract.md)
+  and decided by [ADR 0018](../adr/0018-framework-agnostic-means-never-naming-a-vendor.md).
 
 ## 12. Cross-references
 
@@ -389,4 +403,5 @@ adopt before there is code to lint.
 - Event contract: [`docs/architecture/event-contract.md`](../architecture/event-contract.md) — triggers, labels, the query set
 - Remote execution service: [`docs/architecture/remote-contract.md`](../architecture/remote-contract.md) — `/health`, `budget`, timeouts
 - This decision: [ADR 0016](../adr/0016-idle-probed-at-the-harness.md), [ADR 0017](../adr/0017-the-artifact.md) — D31–D38
+- Harness seam: [ADR 0018](../adr/0018-framework-agnostic-means-never-naming-a-vendor.md) — D40, D41
 - Map: [#3](https://github.com/seppaleinen/idle-deck/issues/3) · Backlog: [#10](https://github.com/seppaleinen/idle-deck/issues/10)

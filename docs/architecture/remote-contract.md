@@ -19,7 +19,7 @@ locked status "is a new decision", so neither edit below was made in place):
 - `GET /health` must report **model reachability**, not process liveness — [ADR
   0016](../adr/0016-idle-probed-at-the-harness.md), from [Install, run, configure
   #11](https://github.com/seppaleinen/idle-deck/issues/11).
-- `budget` is a **generation-token ceiling**; the field was previously unit-less — **D36**, same
+- `budget` is a **generation-token ceiling**; the field was previously unit-less — **D37**, same
   ticket.
 
 ---
@@ -96,7 +96,7 @@ Request body:
   "attempt_id": "c73d8f2a-...",        // idempotency key = TaskAttempt.id
   "role": "do",                        // plan | do | sweep — NEVER a model name (D6, I11)
   "prompt": "Implement ... and open a PR.",
-  "budget": 100000,                    // GENERATION TOKENS — ceiling the harness respects (D36)
+  "budget": 100000,                    // GENERATION TOKENS — ceiling the harness respects (D37)
   "timeout_seconds": 10800,            // server enforces this (D17); tier default comes from idle-deck
   "repository": {
     "id": "repo-1",
@@ -156,8 +156,10 @@ internally. No SSE in the MVP.
 | `404` | Unknown run id (non-retryable — see section 7). |
 
 The worker/operator gets liveness; the `log` artifact can be assembled incrementally. SSE is the
-documented v2 path when [#12](https://github.com/seppaleinen/idle-deck/issues/12) re-examines the
-adapter — the locked interface does not foreclose it.
+documented v2 path when a **second adapter** appears — the locked interface does not foreclose it.
+It was briefly parked on [#12](https://github.com/seppaleinen/idle-deck/issues/12), which turned out to
+be a different question: #12 decided the *claim*, not the transport (D40/D41,
+[ADR 0018](../adr/0018-framework-agnostic-means-never-naming-a-vendor.md)).
 
 ---
 
@@ -374,8 +376,10 @@ no timeout consumed, retryable, no burn of the retry budget). The P0 run then ta
 
 ## 9. What this contract deliberately does not decide
 
-- **Cost/rate-limit policy** (ceilings, backoff schedule) — fog onto #11.
-- **Secrets lifecycle** (rotation, scoping, mid-run expiry) — fog onto #11.
+- **Cost/rate-limit policy** (ceilings, backoff schedule) — decided by D37 on the operator surface
+  ([`docs/operations/operator-surface.md`](../operations/operator-surface.md) §8); only a *global*
+  ceiling survives, and it is undecidable until the remote reports usage.
+- **Secrets lifecycle** (rotation, scoping, mid-run expiry) — decided by D36, same document, §7.
 - **Sandboxing mechanism** — the remote must confine execution to the checked-out repo; *how* is the
   remote's implementation, not a wire concern.
 - **SSE streaming** — documented v2 path, deferred (Q5).
@@ -383,9 +387,56 @@ no timeout consumed, retryable, no burn of the retry budget). The P0 run then ta
 
 ---
 
+## 9a. The harness conformance suite
+
+**The MVP ships one adapter, and this is what obliges an adapter to exist at all.**
+[#12](https://github.com/seppaleinen/idle-deck/issues/12) decided that "framework-agnostic" means
+*idle-deck names no model, provider, or vendor* (D40) — provable by construction, since `RunRequest`
+has nowhere to put a name — and declined to promise that a second implementation would drop in. In
+place of that promise: a **conformance suite**, written against **this contract** rather than against
+one implementation (D41, [ADR 0018](../adr/0018-framework-agnostic-means-never-naming-a-vendor.md)).
+
+The suite is specified here because these cases are properties of the wire contract, which is what a
+second adapter would have to satisfy. Every case is **client-observable** — a black-box test against a
+server whose answers the test controls. `#10` builds it; it is a required MVP deliverable, not a
+stretch goal.
+
+| # | Case | Property under test | Contract |
+|---|---|---|---|
+| C1 | `Start` twice with the same `attempt_id` | Second call returns the **same** `run_id`; no second execution | §3 |
+| C2 | `Abort` a running run | Returns only after the remote **confirms** death (or it was already terminal) | §4 |
+| C3 | Let a run exceed `timeout_seconds`, stop polling | The run is killed **server-side**; no billed run survives its client | §4 |
+| C4 | Read a terminal result | Artifacts are always typed; `branch_purpose` only on `kind = branch` | §6, I4/I5 |
+| C5 | `429` + `Retry-After` | Maps `retryable_failure`; the header is honoured | §7 |
+| C6 | `401` / `403` / `404` | Maps `non_retryable_failure` | §7 |
+| C7 | `422 budget_exceeded` | Maps `non_retryable_failure`; no retry burns budget | §7 |
+| C8 | Unreachable service | Maps `retryable_failure` — never a hang, never a silent success | §7 |
+| C9 | Client aborts a run, then reads the result | Wire says `cancelled`; the **adapter** records `preempted`, which never crosses the wire | §6, I7 |
+
+**What running it proves, and what it does not.** Passing means the adapter and the contract agree on
+the properties that make D14's retries, D24's lease expiry, D16's preemption, and D17's timeouts safe.
+It does **not** prove a second `Harness` implementation compiles against `Start`/`Abort`/`Result` —
+that gap is named in D41, and trigger 2 (a case that turns out to be **unfalsifiable** from the client
+side) is what promotes the second adapter.
+
+**Trigger list for a second adapter** (D41) — a second adapter is added when:
+
+1. a second execution model is genuinely wanted, one not reachable as a remote JSON/HTTPS service; **or**
+2. a conformance case proves **unfalsifiable** client-side, so a second implementation is the only way
+   to test it; **or**
+3. a second operator needs a harness the first remote service cannot serve.
+
+**What is not a second adapter.** A second *agent CLI* — `pi`, `opencode`, `claude`, `cursor-agent`,
+`droid` — is not a second adapter. Those are vendors of agent execution, and they run **inside** the
+remote service, which owns the workspace; which CLI it wraps is the remote's business (D6). A second
+*remote service* would be a second adapter. A second CLI behind one remote is not.
+
+---
+
 ## 10. Cross-references
 
 - Interface: [`boundaries.md`](boundaries.md) — `Harness` seam (`Start`/`Abort`/`Result`), `RunRequest`, `RunResult`, worker loop.
+- Conformance suite: §9a above, required by D41 — [ADR 0018](../adr/0018-framework-agnostic-means-never-naming-a-vendor.md) (D40, D41).
 - Decision: [ADR 0014](../adr/0014-remote-execution-service-contract.md), [D27](../../AGENTS.md).
 - Upstream: [ADR 0013](../adr/0013-harness-lifecycle.md) (D26), [ADR 0005](../adr/0005-one-harness-adapter.md) (D7), [ADR 0006](../adr/0006-models-on-a-separate-server.md) (D20), [ADR 0003](../adr/0003-idle-is-a-probe.md) (D5).
 - Ontology: [`../ontology.md`](../ontology.md) — `ArtifactKind`, `AttemptOutcome`, I4, I5, I7, I8, I11.

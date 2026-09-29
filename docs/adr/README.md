@@ -139,6 +139,7 @@ they were defined — is exactly what this prevents. When CI lands (#11), this b
 | [0015](0015-github-event-contract.md) | GitHub event contract: idle-deck polls, labels trigger tiers, dedupe is a stable resource key | accepted (from D28, D29, D30) |
 | [0016](0016-idle-probed-at-the-harness.md) | Idle is probed at the harness's `/health`, and `/health` must report model reachability | accepted (from D31) |
 | [0017](0017-the-artifact.md) | One static cgo-free binary, main package at the repo root, installed with `go install` | accepted (from D32) |
+| [0018](0018-framework-agnostic-means-never-naming-a-vendor.md) | "Framework-agnostic" means never naming a model, provider, or vendor; the seam is proved by a conformance suite, not a second adapter | accepted (from D40, D41) |
 
 ## Supersessions, and what they cost
 
@@ -171,5 +172,20 @@ the workspace question *under* the harness interface (D27/ADR 0014) instead of c
 nothing in it became untrue, whereas 0003 was superseded because a sentence in it became untrue.
 That is the line.
 
+**A third case, and the first *additive* one:** [#12](https://github.com/seppaleinen/idle-deck/issues/12)
+answered a question **ADR 0005** had deferred, and the answer was a *narrowing*, not a reversal.
+"Framework-agnostic" was carrying two claims; only one was provable, so D40 keeps the provable one and
+declines the other. That is what a supersession is **not** for: nothing in 0005 became untrue. 0005
+still stands, 0013 still stands, 0014 still stands, and their bodies still say "#12 decides" — which is
+correct, because an ADR body is frozen history and 0018 is the answer. Editing 0005 to remove the
+pointer would have destroyed the record of *why* the question was open. The claim that needed fixing
+lives in the mutable documents, and those are what #12 amended.
+
+ADR 0018 is also the first decision here that **adds a mechanism rather than removing a claim** — a
+conformance suite (D41) specified in `docs/architecture/remote-contract.md` §9a, which is what an
+adapter must pass before a second adapter is worth writing. The deferral carries a trigger list,
+because a deferral without one is an unowned promise.
+
 The ADR-tier decision most likely to be tested next is the [queue
-lease](0011-queue-lease.md), when a second queue implementation is considered.
+lease](0011-queue-lease.md), when a second queue implementation is considered — and the harness seam's
+version of that question is now answered by the same instrument, one ticket earlier than expected.

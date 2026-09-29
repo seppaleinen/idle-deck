@@ -5,7 +5,7 @@ is the resolution of [Architecture boundaries #6](https://github.com/seppaleinen
 and the direct input to [MVP backlog #10](https://github.com/seppaleinen/idle-deck/issues/10).
 
 **Status:** locked by #6 against the [domain ontology](../ontology.md) and the decision record
-([D1–D23](../../AGENTS.md), [ADRs](../adr/README.md)).
+([D1–D41](../../AGENTS.md), [ADRs](../adr/README.md)).
 
 ---
 
@@ -174,6 +174,17 @@ type RunResult struct {
   harness returned, not by asking the harness to do git.
 - **Never-do:** no `prepare_workspace`, no `dispatch`-with-filesystem, no model names, no polling
   API on the worker side beyond `Result`.
+- **"Framework-agnostic" means this interface names no model, provider, or vendor** — a property of
+  `RunRequest`'s *shape*, since it has no field a name could occupy. The MVP makes **no** claim that a
+  second, structurally different implementation drops in; that is deferred behind a trigger list
+  (D40/D41, [ADR 0018](../adr/0018-framework-agnostic-means-never-naming-a-vendor.md)). The MVP
+  adapter instead ships with the **conformance suite** specified in
+  [`remote-contract.md`](remote-contract.md) §9a — nine client-observable cases against the wire
+  contract, which is what a second adapter would have to satisfy. D41 adds **no method** to this
+  interface; the suite tests the contract underneath it, not the three methods.
+- **A second agent CLI is not a second adapter.** `pi`, `opencode`, `claude`, `cursor-agent` are
+  vendors of agent execution and run *inside* the remote, which owns the workspace (D6, D27). A second
+  *remote service* would be a second adapter; a second CLI behind one remote is not.
 
 ### 4. Worker loop — composition root, `max_concurrent_jobs` parameter
 

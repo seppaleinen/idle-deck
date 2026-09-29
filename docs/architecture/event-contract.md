@@ -332,8 +332,10 @@ P2, `Nack(lease, preempted)`, dequeues the P0, and starts it. `preempted` never 
 - **Webhooks** — deferred, not refused. A webhook adapter would be a second `TrackerSource`
   implementation (ADR 0012) with its own idempotency regime, and is the right answer for a hosted
   multi-user idle-deck, which D4 defers.
-- **Label colours and install-time label creation** — operator surface, #11.
-- **A CLI tier override for `idle-redo`** — operator surface, #11.
+- **Label colours and install-time label creation** — **closed** on the operator surface (D39: no
+  automatic creation; `check` reports what is missing and prints the `gh` commands).
+- **A CLI tier override for `idle-redo`** — **closed** on the operator surface (D33: no `enqueue`
+  and no tier override; `idle-redo` is the affordance, one click, no second ingestion path).
 - **Whether `since` composes with `labels`** — verify in the #10 adapter spec (§8).
 
 ## 11. Cross-references

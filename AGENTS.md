@@ -57,8 +57,8 @@ pointer. Nothing is silently rewritten. The only mutable field on an ADR is its 
 |---|---|---|
 | **D5** *(superseded)* | ~~**Idle means: idle-deck can reach the model.** It probes the inference server; if it answers, the engine is considered idle. No platform idle heuristics.~~ **Definition kept, probe location changed by D31.** | [ADR 0003](docs/adr/0003-idle-is-a-probe.md) → superseded by [ADR 0016](docs/adr/0016-idle-probed-at-the-harness.md) |
 | **D31** | **Idle is probed at the harness's `GET /health`, and that endpoint must report model reachability, not process liveness.** Definition unchanged; no platform heuristics. | [ADR 0016](docs/adr/0016-idle-probed-at-the-harness.md). One URL and one credential instead of two, and D6 keeps model knowledge out of the coordinator. The reachability requirement is load-bearing: a liveness ping would report a model-down machine as idle. |
-| **D6** | **idle-deck never names a model.** It passes a *role* (`plan` / `do` / `sweep`) plus a budget to the harness. The harness decides the model. | [ADR 0004](docs/adr/0004-never-name-a-model.md) |
-| **D7** | MVP ships **exactly one** harness adapter, talking to a remote execution service over JSON/HTTP. | [ADR 0005](docs/adr/0005-one-harness-adapter.md) |
+| **D6** | **idle-deck never names a model.** It passes a *role* (`plan` / `do` / `sweep`) plus a budget to the harness. The harness decides the model. Widened to *provider* and *vendor* by **D40**. | [ADR 0004](docs/adr/0004-never-name-a-model.md) |
+| **D7** | MVP ships **exactly one** harness adapter, talking to a remote execution service over JSON/HTTP. What obliges an adapter to exist, and when a second may be added, is **D41**. | [ADR 0005](docs/adr/0005-one-harness-adapter.md) |
 | **D20** | Models run on a **server separate from the workstation**. idle-deck orchestrates; it does not host inference. | [ADR 0006](docs/adr/0006-models-on-a-separate-server.md) |
 
 ### Adapters and the event pipeline
@@ -91,6 +91,8 @@ pointer. Nothing is silently rewritten. The only mutable field on an ADR is its 
 | **D25** | The tracker seam splits into **`TrackerSource`** (inbound parse, allowlist gate I1) and **`TrackerSink`** (outbound comment/label), one GitHub implementation. PR production is the harness's, not the tracker's (I4). | [ADR 0012](docs/adr/0012-tracker-split.md) |
 | **D26** | The **`Harness`** interface is execution lifecycle only — `Start` / `Abort` / `Result` over a remote execution service, carrying a role never a model. No `prepare_workspace`, no local git. Workspace ownership is deferred to #8. | [ADR 0013](docs/adr/0013-harness-lifecycle.md) |
 | **D27** | The **workspace lives on the remote**. The remote owns checkout, git, and Draft PR production; idle-deck gets typed artifacts as data. Wire: `POST/GET/DELETE /runs` + health, idempotent by `attempt_id`, server-enforced timeout, bearer+TLS, zero inbound calls. Contract: `docs/architecture/remote-contract.md`. | [ADR 0014](docs/adr/0014-remote-execution-service-contract.md) |
+| **D40** | **"Framework-agnostic" means idle-deck names no model, provider, or vendor** — and nothing more. Provable by construction: `RunRequest` has no field a name could occupy. The MVP makes **no** claim that a second `Harness` implementation drops in. | [ADR 0018](docs/adr/0018-framework-agnostic-means-never-naming-a-vendor.md). [#12](https://github.com/seppaleinen/idle-deck/issues/12) was asked whether to ship a second adapter, but #8 had already made that option a *reversal* of D27 rather than a backlog item, and the word was carrying two claims of which only one is provable. A headline that outruns the evidence is what the decision record exists to prevent. |
+| **D41** | **The harness seam is falsified by a conformance suite, not a second adapter.** The MVP adapter ships with nine client-observable cases specified against the wire contract (`docs/architecture/remote-contract.md` §9a), and a second adapter is added only when a named trigger fires: a second execution model is wanted, a case proves **unfalsifiable** client-side, or a second operator needs a different harness. | [ADR 0018](docs/adr/0018-framework-agnostic-means-never-naming-a-vendor.md). The unproven part is the *contract* — idempotency, server-enforced timeout, confirmed-dead abort, the outcome taxonomy — and a local-subprocess adapter shares none of it. D40's deferral without a trigger list would be an unowned promise, which is the same defect as the broad claim. |
 
 ### Configuration
 
@@ -125,16 +127,18 @@ pointer. Nothing is silently rewritten. The only mutable field on an ADR is its 
   observation, the configured repo list is the allowlist (D30), a stable resource dedupe key, the
   trigger label removed on any terminal state, and the prompt is the issue's title and body verbatim.
   **Every tier now has a trigger** — `idle-hotfix` (P0), issue creation (P1), `idle-ready` (P2), a
-  local scheduler (P3), `idle-redo` (redefinition); labels are D29. Still open: what a P3 *sweep*
-  looks for (trigger settled, content not), cost/rate-limit policy, secrets lifecycle, live
-  cancellation, and label colours — fog onto the operator surface
-  ([#11](https://github.com/seppaleinen/idle-deck/issues/11)) and the #10 adapter spec.
+  local scheduler (P3), `idle-redo` (redefinition); labels are D29. Still open: **what a P3 *sweep*
+  does** (its own ticket, [#13](https://github.com/seppaleinen/idle-deck/issues/13)) and live
+  cancellation. Cost/rate-limit policy, secrets lifecycle, and label colours are **closed** — D37, D36,
+  and D39 on the operator surface.
 - **The remote contract is locked.** [#8](https://github.com/seppaleinen/idle-deck/issues/8) —
   **the workspace lives on the remote** (D27, [ADR 0014](docs/adr/0014-remote-execution-service-contract.md),
   wire contract at `docs/architecture/remote-contract.md`): typed results, idempotency by
-  `attempt_id`, server-enforced timeout, bearer+TLS, zero inbound calls. Cost/rate-limit policy,
-  secrets lifecycle, and the exact failure-code list are still open — fog onto the operator surface
-  ([#11](https://github.com/seppaleinen/idle-deck/issues/11)) and the #10 adapter spec.
+  `attempt_id`, server-enforced timeout, bearer+TLS, zero inbound calls. Cost/rate-limit policy and
+  secrets lifecycle are **closed** by D37/D36; the exact failure-code list is owed by #10. The
+  contract now also carries the **conformance suite** (§9a, D41) — nine client-observable cases the
+  MVP adapter must pass, which is what [#12](https://github.com/seppaleinen/idle-deck/issues/12)
+  decided instead of a second adapter.
 - **The operator and developer surface is locked.** [#11](https://github.com/seppaleinen/idle-deck/issues/11) —
   **one static cgo-free binary** installed with `go install` (D32, [ADR
   0017](docs/adr/0017-the-artifact.md)), env vars + flags and **no YAML** (D34, the MVP scope of
@@ -151,6 +155,14 @@ pointer. Nothing is silently rewritten. The only mutable field on an ADR is its 
 - **Queue lease semantics — resolved.** Dequeue is a lease with expiry (D24, [ADR
   0011](docs/adr/0011-queue-lease.md)): expiry without ack records `timeout` on the abandoned attempt
   and re-queues, consuming one retry. A daemon crash cannot strand a task.
+- **What "framework-agnostic" means is resolved.** [#12](https://github.com/seppaleinen/idle-deck/issues/12) —
+  the headline word is narrowed to *idle-deck names no model, provider, or vendor* (D40), a property of
+  `RunRequest`'s shape rather than a claim about adapter count, and the MVP claims no pluggability it
+  cannot show. The seam is falsified by the **conformance suite** instead of a second implementation
+  (D41), with a named trigger list for when a second adapter may be added. The ticket's own "ship a
+  local subprocess too" option had quietly become a reversal of D27 rather than a backlog item, and a
+  second agent CLI is not a second adapter at all — it runs *inside* the remote.
+
 
 ## Related
 
