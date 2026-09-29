@@ -36,6 +36,13 @@ is marked *superseded* with a pointer. Nothing is silently rewritten.
 | **D22** | **Never merges.** The MVP opens a Draft PR and stops. Merge policy is future work. | Autonomy is earned by evidence, not assumed. |
 | **D19** | **CLI only** for the MVP. [#2](https://github.com/seppaleinen/idle-deck/issues/2) (GUI) is post-MVP and its requirements stay deliberately undecided. | Don't build a UI against an unsettled ontology. |
 
+### Domain model
+
+| id | Decision | Rationale |
+|---|---|---|
+| **D10** | Issue #1's ontology is a **revisable draft, not binding**. The domain model is re-derived, not inherited. | A handover that mixes domain, policy, and implementation choice rots. Locking #1 would lock its confusions in. |
+| **D11** | The ontology is a **standalone document** ([`docs/ontology.md`](docs/ontology.md)), separated from policy and from implementation choice. | Domain model, operational policy, and MVP choices have different lifetimes. Merging them is what makes handovers rot. |
+
 ### Models and idle
 
 | id | Decision | Rationale |
@@ -77,20 +84,26 @@ is marked *superseded* with a pointer. Nothing is silently rewritten.
 
 ## Open, and deliberately so
 
-- **The ontology is not locked.** [#5](https://github.com/seppaleinen/idle-deck/issues/5) writes
-  `docs/ontology.md` and pressure-tests issue #1. Issue #1's ontology is a strong draft, not gospel:
-  it models no idle signal, no repo trust domain, no task result, no attempt history, and no failure
-  classification.
+- **The ontology is locked** ([`docs/ontology.md`](docs/ontology.md), resolved by
+  [#5](https://github.com/seppaleinen/idle-deck/issues/5)). Six entities, six closed value sets,
+  eleven named invariants, and an explicit negative list. Issue #1's flat `TaskItem` is split into
+  `Task` + `TaskAttempt`; `repository_url` becomes a `Repository` entity; idle, provenance, and task
+  lineage are additions. Retry counts and tier timeouts are policy and stayed out. The document
+  carries a kept/reworded/dropped mapping for every part of #1, with reasons.
+- **P0 and P3 have no trigger.** Both tiers exist in the ontology; nothing produces them. A gap in the
+  event contract, not the ontology — [#9](https://github.com/seppaleinen/idle-deck/issues/9).
 - **The remote contract is not written.** [#8](https://github.com/seppaleinen/idle-deck/issues/8).
   Notably unresolved: **does the workspace live on the remote side or locally?** Two incompatible
-  architectures currently share one interface name.
+  architectures currently share one interface name. Invariant I8 (a running attempt is abortable via
+  its session handle) is the obligation this imposes on the harness.
 - **Queue lease semantics are the highest-consequence unknown.** Dequeue-while-running must either be a
   lease that expires (a daemon crash cannot strand a task) or a destructive pop that loses it. The whole
   fault-tolerance story depends on the answer. [#6](https://github.com/seppaleinen/idle-deck/issues/6).
 
 ## Related
 
+- [`docs/ontology.md`](docs/ontology.md) — the locked domain model.
 - [`README.md`](README.md) — what idle-deck is, for users and developers.
 - [Map #3](https://github.com/seppaleinen/idle-deck/issues/3) — the live plan.
 - [#1 Architecture Handover & Domain Ontology](https://github.com/seppaleinen/idle-deck/issues/1) —
-  the draft this effort pressure-tests.
+  the draft this effort pressure-tested.
