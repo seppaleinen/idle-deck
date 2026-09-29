@@ -19,7 +19,8 @@ prose duplication. Decisions live in **one of two tiers**:
 The full convention — tiers, file format, immutability, statuses, superseding, and the D-id
 verification check — is in [`docs/adr/README.md`](docs/adr/README.md). Decisions are additive; a
 changed decision gets a **new** id marked *supersedes*, and the old one is marked *superseded* with a
-pointer. Nothing is silently rewritten. The only mutable field on an ADR is its `Status:` header.
+pointer. Nothing is silently rewritten. An ADR's **body** is immutable; in the header, `Status:`
+flips and `Related:` is correctable (**D42**) — the rest is frozen.
 
 > Convention locked by [Decision record #7](https://github.com/seppaleinen/idle-deck/issues/7).
 > Requires: implementers cite their D-refs on issues; reviewers check them. The D-id verification
@@ -86,6 +87,7 @@ pointer. Nothing is silently rewritten. The only mutable field on an ADR is its 
 | id | Decision | Rationale |
 |---|---|---|
 | **D9** | **Go 1.27** (installed locally: `go1.27.1 darwin/arm64`). | [ADR 0010](docs/adr/0010-go.md) |
+| **D42** | **An ADR's body is frozen; its header's cross-reference fields are not.** `Status:` flips and `Superseded by:` is added by design; `Related:` may be corrected, because a navigational pointer asserts nothing. `Title:`, `Source:`, `Supersedes:`, and everything from `## Decision` onward are immutable. A correction is its own commit, not a supersession. | The convention claimed "the only mutable field is `Status:`" while the same document instructed adding a `Superseded by:` line — so the header already gained fields and the rule was under-specified, not strict. It surfaced on ADR 0017, whose `Related:` listed D31 (the idle probe, unrelated) and omitted D32 (its own decision, which 0004/0005 both list). A rule nobody can apply is the same defect as an id cited before it is defined. |
 | **D18** | Go interface naming follows Go convention (`Harness`, not `BaseHarness`). **Confirmed** in [Architecture boundaries #6](https://github.com/seppaleinen/idle-deck/issues/6): interfaces are named by behaviour; `Base*` is dead. | Issue #1's `Base*` prefix is not idiomatic. |
 | **D24** | **Queue dequeue is a lease, never a pop.** Expiry without ack is recorded as `timeout` on the abandoned attempt and the task is re-queued, consuming one retry. No lost-task path. | [ADR 0011](docs/adr/0011-queue-lease.md) |
 | **D25** | The tracker seam splits into **`TrackerSource`** (inbound parse, allowlist gate I1) and **`TrackerSink`** (outbound comment/label), one GitHub implementation. PR production is the harness's, not the tracker's (I4). | [ADR 0012](docs/adr/0012-tracker-split.md) |

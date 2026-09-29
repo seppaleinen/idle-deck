@@ -2,7 +2,7 @@
 Title:   The artifact: one static cgo-free binary, installed with go install
 Status:  accepted
 Supersedes: —
-Related: D2, D4, D9, D13, D19, D23, D31, 0010, 0012
+Related: D2, D4, D9, D13, D19, D23, D32, 0010, 0012
 Source:   #11 Install, run, configure: the operator and developer surface
 ---
 

@@ -49,10 +49,26 @@ Source:  <ticket/PR>       ← the discussion that resolved it
 ### Immutability
 
 - The **body is immutable.** Rationale, alternatives, and consequences are frozen history.
-- The **single mutable property is `Status:`** in the header. It flips to `superseded` with a
-  `Superseded by: NNNN` line when a newer ADR replaces it. That flip is its own commit — recorded in
-  git history like everything else.
+- The **header is not uniformly frozen**, and the fields divide by what they are *for* (D42):
+
+| Field | Rule |
+|---|---|
+| `Status:` | **Mutable by design.** Flips to `superseded` with a `Superseded by: NNNN` line when a newer ADR replaces it. That flip is its own commit. |
+| `Superseded by:` | **Added** by that same flip. It is the mechanism, not an exception to the rule. |
+| `Related:` | **Correctable.** It is a navigational index, not a claim — a wrong pointer sends a reader to an irrelevant decision and asserts nothing false. Corrected in its own commit, so the diff is the record. |
+| `Title:`, `Supersedes:`, `Source:` | **Immutable.** Title changes what the record is called, `Supersedes:` is the supersession's own assertion, and `Source:` is provenance. |
+| `## Decision` onward | **Immutable.** The whole of the argument below the header. |
+
+- **Why this split exists.** The convention used to say "the single mutable property is `Status:`"
+  while *the same document* instructed adding a `Superseded by:` line — so the header was already
+  gaining fields, and the absolute claim was under-specified rather than merely strict. The gap was
+  found the hard way: ADR 0017's `Related:` listed **D31** (the idle-probe decision, unrelated to the
+  artifact) and omitted **D32**, its own decision, which ADR 0004 and 0005 both list. Nobody could tell
+  whether the header was fair game. See [D42](../../AGENTS.md).
 - Numbering is never reused. A superseded ADR keeps its number forever.
+- A **navigational correction is not a supersession and not a rewrite.** Nothing about the decision
+  changed, so no new ADR is minted and no status flips — which is what distinguishes it from the 0003
+  → 0016 case, where a *sentence someone would quote* had become untrue.
 
 ## Statuses
 
