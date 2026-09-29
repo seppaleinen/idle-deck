@@ -328,8 +328,11 @@ Recorded so they are visible rather than assumed away.
 
 - **P0 and P3 have no trigger.** Both tiers exist in the model; nothing produces them. This is a
   gap in the event contract, not in the ontology.
-- **The workspace-ownership contradiction** (see the #1 mapping) means `remote_session_id` may need a
-  different home if the workspace turns out to be local.
+- **The workspace-ownership contradiction is resolved.** The #1 mapping flagged that
+  `remote_session_id` may need a different home if the workspace turned out to be local. [Remote
+  execution service contract #8](https://github.com/seppaleinen/idle-deck/issues/8) settled it: **the
+  workspace lives on the remote** (D27, [ADR 0014](docs/adr/0014-remote-execution-service-contract.md));
+  `remote_session_id` stays as-is and equals the remote's `run_id`.
 - **Sweep policy.** What a sweep looks for, and whether it may ever open a PR, is undecided.
 - **Cancellation.** `aborted` is reserved. The reserved outcome is named; the feature is not designed.
 

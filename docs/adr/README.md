@@ -135,12 +135,14 @@ they were defined — is exactly what this prevents. When CI lands (#11), this b
 | [0011](0011-queue-lease.md) | Queue dequeue is a lease, never a pop | accepted (from D24) |
 | [0012](0012-tracker-split.md) | Tracker split: inbound parser and outbound writer are separate interfaces | accepted (from D25) |
 | [0013](0013-harness-lifecycle.md) | Harness interface is execution lifecycle only; workspace ownership deferred to #8 | accepted (from D26) |
+| [0014](0014-remote-execution-service-contract.md) | Remote execution service contract: workspace is remote, contract is typed and pull-based | accepted (from D27) |
 
 ## Next real supersession
 
 The supersede path has been **confirmed intact** — not yet exercised. [Architecture boundaries
 #6](https://github.com/seppaleinen/idle-deck/issues/6) **confirmed D18** (Go interface naming,
-`Harness` not `BaseHarness`) rather than replacing it, so no ADR had to flip. The first real
-supersession is still to come; the ADR-tier decision most likely to be tested is the
-[queue lease](0011-queue-lease.md) when a second queue implementation is considered, or a harness
-lifecycle change if the remote contract (#8) forces one.
+`Harness` not `BaseHarness`) rather than replacing it, and [Remote execution service
+contract #8](https://github.com/seppaleinen/idle-deck/issues/8) decided the workspace question
+*under* the harness interface (D27/ADR 0014) instead of changing it — ADR 0013 still stands
+unchanged. The first real supersession is still to come; the ADR-tier decision most likely to be
+tested is the [queue lease](0011-queue-lease.md) when a second queue implementation is considered.

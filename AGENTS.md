@@ -86,6 +86,7 @@ pointer. Nothing is silently rewritten. The only mutable field on an ADR is its 
 | **D24** | **Queue dequeue is a lease, never a pop.** Expiry without ack is recorded as `timeout` on the abandoned attempt and the task is re-queued, consuming one retry. No lost-task path. | [ADR 0011](docs/adr/0011-queue-lease.md) |
 | **D25** | The tracker seam splits into **`TrackerSource`** (inbound parse, allowlist gate I1) and **`TrackerSink`** (outbound comment/label), one GitHub implementation. PR production is the harness's, not the tracker's (I4). | [ADR 0012](docs/adr/0012-tracker-split.md) |
 | **D26** | The **`Harness`** interface is execution lifecycle only — `Start` / `Abort` / `Result` over a remote execution service, carrying a role never a model. No `prepare_workspace`, no local git. Workspace ownership is deferred to #8. | [ADR 0013](docs/adr/0013-harness-lifecycle.md) |
+| **D27** | The **workspace lives on the remote**. The remote owns checkout, git, and Draft PR production; idle-deck gets typed artifacts as data. Wire: `POST/GET/DELETE /runs` + health, idempotent by `attempt_id`, server-enforced timeout, bearer+TLS, zero inbound calls. Contract: `docs/architecture/remote-contract.md`. | [ADR 0014](docs/adr/0014-remote-execution-service-contract.md) |
 
 ### Configuration
 
@@ -103,11 +104,12 @@ pointer. Nothing is silently rewritten. The only mutable field on an ADR is its 
   carries a kept/reworded/dropped mapping for every part of #1, with reasons.
 - **P0 and P3 have no trigger.** Both tiers exist in the ontology; nothing produces them. A gap in the
   event contract, not the ontology — [#9](https://github.com/seppaleinen/idle-deck/issues/9).
-- **The remote contract is not written.** [#8](https://github.com/seppaleinen/idle-deck/issues/8).
-  Notably unresolved: **does the workspace live on the remote side or locally?** The interface no
-  longer smuggles an answer — [D26](docs/adr/0013-harness-lifecycle.md) made the harness lifecycle-only
-  (`Start`/`Abort`/`Result`), so #8 is a pure content decision, not a redesign. Invariant I8 (a
-  running attempt is abortable via its session handle) is the obligation this imposes on the harness.
+- **The remote contract is locked.** [#8](https://github.com/seppaleinen/idle-deck/issues/8) —
+  **the workspace lives on the remote** (D27, [ADR 0014](docs/adr/0014-remote-execution-service-contract.md),
+  wire contract at `docs/architecture/remote-contract.md`): typed results, idempotency by
+  `attempt_id`, server-enforced timeout, bearer+TLS, zero inbound calls. Cost/rate-limit policy,
+  secrets lifecycle, and the exact failure-code list are still open — fog onto the operator surface
+  ([#11](https://github.com/seppaleinen/idle-deck/issues/11)) and the #10 adapter spec.
 - **Queue lease semantics — resolved.** Dequeue is a lease with expiry (D24, [ADR
   0011](docs/adr/0011-queue-lease.md)): expiry without ack records `timeout` on the abandoned attempt
   and re-queues, consuming one retry. A daemon crash cannot strand a task.

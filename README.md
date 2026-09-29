@@ -31,7 +31,7 @@ Five moving parts, each behind a small interface with exactly one real implement
 | **Tracker adapter** | GitHub | Turns tracker events into tasks; writes comments and labels back |
 | **Priority queue** | SQLite | Orders work by tier, survives daemon restarts, leases running tasks |
 | **Worker daemon** | Go, one worker | Runs the loop: dequeue → dispatch → report → repeat |
-| **Harness adapter** | Remote HTTP service | Prepares a workspace, sends role + prompt + budget, streams the result |
+| **Harness adapter** | Remote HTTP service | Sends role + prompt + budget; polls a remote execution service that owns the workspace and returns typed artifacts |
 | **Idle probe** | Against the inference server | If the model answers, the engine is considered idle |
 
 ### Two ideas worth understanding
