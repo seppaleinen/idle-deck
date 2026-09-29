@@ -55,7 +55,8 @@ pointer. Nothing is silently rewritten. The only mutable field on an ADR is its 
 
 | id | Decision | Rationale |
 |---|---|---|
-| **D5** | **Idle means: idle-deck can reach the model.** It probes the inference server; if it answers, the engine is considered idle. No platform idle heuristics. | [ADR 0003](docs/adr/0003-idle-is-a-probe.md) |
+| **D5** *(superseded)* | ~~**Idle means: idle-deck can reach the model.** It probes the inference server; if it answers, the engine is considered idle. No platform idle heuristics.~~ **Definition kept, probe location changed by D31.** | [ADR 0003](docs/adr/0003-idle-is-a-probe.md) → superseded by [ADR 0016](docs/adr/0016-idle-probed-at-the-harness.md) |
+| **D31** | **Idle is probed at the harness's `GET /health`, and that endpoint must report model reachability, not process liveness.** Definition unchanged; no platform heuristics. | [ADR 0016](docs/adr/0016-idle-probed-at-the-harness.md). One URL and one credential instead of two, and D6 keeps model knowledge out of the coordinator. The reachability requirement is load-bearing: a liveness ping would report a model-down machine as idle. |
 | **D6** | **idle-deck never names a model.** It passes a *role* (`plan` / `do` / `sweep`) plus a budget to the harness. The harness decides the model. | [ADR 0004](docs/adr/0004-never-name-a-model.md) |
 | **D7** | MVP ships **exactly one** harness adapter, talking to a remote execution service over JSON/HTTP. | [ADR 0005](docs/adr/0005-one-harness-adapter.md) |
 | **D20** | Models run on a **server separate from the workstation**. idle-deck orchestrates; it does not host inference. | [ADR 0006](docs/adr/0006-models-on-a-separate-server.md) |
@@ -96,6 +97,19 @@ pointer. Nothing is silently rewritten. The only mutable field on an ADR is its 
 | id | Decision | Rationale |
 |---|---|---|
 | **D23** | **Env-first configuration**: env vars, optional YAML file, CLI flags override. Tokens are never logged and never committed. | Twelve-factor, easy to run locally. Concrete var names are pinned in [#11](https://github.com/seppaleinen/idle-deck/issues/11). |
+| **D34** | **MVP configuration is env vars + CLI flags only — no YAML file.** Precedence flags > env > defaults. Concrete names, and the required-vs-defaulted split, in [`docs/operations/operator-surface.md`](docs/operations/operator-surface.md). | A narrowing of **D23**'s *scope*, not a supersession: D23 permits an optional YAML file, and the MVP simply does not build it. A second source of truth can disagree with the first, and "which one won" is a bug class env-only config cannot have. |
+
+### Artifact, CLI, and operations
+
+| id | Decision | Rationale |
+|---|---|---|
+| **D32** | **One static cgo-free binary, `go install`**, main package at the repo root, pure-Go SQLite. Release binaries, Homebrew, and containers deferred. | [ADR 0017](docs/adr/0017-the-artifact.md). The driver is the whole decision: cgo means a C toolchain on every machine forever. `max_concurrent_jobs: 1` (D8) means throughput is not a constraint this project has. |
+| **D33** | **The CLI surface is `run`, `status`, `check`, `--version`.** Automatic forward-only migrations at startup. No `stop`, no `once`/cron, no `enqueue`/tier override, no `queue ls`. | Each absence has a reason: `launchctl bootout` is the stop; `once` would give the lease, heartbeat, and watermark three owners depending on invocation and would break P0 preemption's resident worker; a tier override is a second ingestion path for something `idle-redo` already does with one click. |
+| **D35** | **Supervision is a documented `launchd` LaunchAgent** (per-user, no root, `KeepAlive: SuccessfulExit false`), plus foreground `run` for development. **No plist generator.** | macOS has `launchd`, not `systemd`. A generator is a second surface to keep in sync with the config surface, bought with a one-time copy-paste. |
+| **D36** | **Secrets are the environment and nothing else.** No `.env` reader. Redaction in the config layer, never at each log call. Never written to SQLite. Rotation is rotate-and-restart; a mid-run expiry is an ordinary retryable failure. Keychain deferred. | Closes the map's secrets fog. A program that silently reads a file from its working directory is a surprise, and a secrets file is a second source of truth. The `0600` plist or wrapper is read by `launchd`/the shell, never by idle-deck. |
+| **D37** | **`budget` is a generation-token ceiling.** Per-role defaults: plan 5000, sweep 20000, hotfix 50000, do 100000. Tier timeouts: plan 900s, sweep 3600s, **hotfix 1800s**, do 10800s. Retry backoff exponential from 30s capped at 10m, `Retry-After` honoured. **No global spend ceiling.** | The wire contract carried three budget numbers with **no unit**; tokens are the natural currency for an LLM harness and match the existing magnitudes. P0 is the only timeout this project added: a hotfix longer than a sweep is a feature, and every second it runs is a second the P2 it displaced stays aborted. A global ceiling is **not** an oversight — idle-deck cannot observe remote-metered spend, so a cap it cannot see is a number that does nothing. |
+| **D38** | **Local development runs against in-repo HTTP stubs behind base-URL overrides** (`IDLE_DECK_GITHUB_API`, `IDLE_DECK_HARNESS_URL`) — never a second `TrackerSource`. | D28 made the dev loop stateless: polling observes state, so there is nothing to inject. The base-URL override exercises the *real* adapters; a second implementation would only ever run under a test, which is the second-implementation question #12 asks, answered by an artifact nobody ships. The override also serves GitHub Enterprise, so it is not test-only. |
+| **D39** | **No automatic label creation.** `check` reports which of the four D29 labels are missing and prints the exact `gh label create` commands. Colours documented as a suggested palette, never applied. | Auto-creating writes to a repository's label namespace — a visible mutation needing admin permission, done silently on first run, in a namespace shared with humans. That is the same objection that made D29's prefix a safety property rather than a style choice. |
 
 ## Open, and deliberately so
 
@@ -121,6 +135,19 @@ pointer. Nothing is silently rewritten. The only mutable field on an ADR is its 
   `attempt_id`, server-enforced timeout, bearer+TLS, zero inbound calls. Cost/rate-limit policy,
   secrets lifecycle, and the exact failure-code list are still open — fog onto the operator surface
   ([#11](https://github.com/seppaleinen/idle-deck/issues/11)) and the #10 adapter spec.
+- **The operator and developer surface is locked.** [#11](https://github.com/seppaleinen/idle-deck/issues/11) —
+  **one static cgo-free binary** installed with `go install` (D32, [ADR
+  0017](docs/adr/0017-the-artifact.md)), env vars + flags and **no YAML** (D34, the MVP scope of
+  D23), CLI limited to `run`/`status`/`check`/`--version` with health as a command and **no HTTP
+  endpoint** (D33, which follows D28's no-inbound-surface), supervision by a documented `launchd`
+  LaunchAgent (D35), secrets env-only with no `.env` reader (D36), and `budget` pinned as a
+  **generation-token** ceiling per role with P0 at 1800s/50000 (D37). The idle probe is now
+  unambiguously the harness's `/health`, and must report reachability rather than liveness (D31,
+  [ADR 0016](docs/adr/0016-idle-probed-at-the-harness.md)) — which **supersedes D5 and ADR 0003**,
+  the second real supersession, revising a decision's mechanism while keeping its definition. The
+  surface is in [`docs/operations/operator-surface.md`](docs/operations/operator-surface.md). Still
+  open: a **global spend ceiling** (impossible until the remote reports usage), release
+  binaries/Homebrew/containers (until there is a second user), a YAML file, and the macOS Keychain.
 - **Queue lease semantics — resolved.** Dequeue is a lease with expiry (D24, [ADR
   0011](docs/adr/0011-queue-lease.md)): expiry without ack records `timeout` on the abandoned attempt
   and re-queues, consuming one retry. A daemon crash cannot strand a task.

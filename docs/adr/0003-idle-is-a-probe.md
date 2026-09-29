@@ -1,7 +1,7 @@
 ---
 Title:   Idle means: idle-deck can reach the model
-Status:  accepted
-Supersedes: —
+Status:  superseded
+Superseded by: 0016
 Related: D5, D7, D20, 0006
 Source:   #3 charting
 ---

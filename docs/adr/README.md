@@ -124,7 +124,7 @@ they were defined — is exactly what this prevents. When CI lands (#11), this b
 |---|---|---|
 | [0001](0001-ontology-revisable.md) | Issue #1's ontology is a revisable draft | accepted (from D10/D11) |
 | [0002](0002-ontology-standalone-document.md) | The ontology is a standalone document | accepted (from D10/D11) |
-| [0003](0003-idle-is-a-probe.md) | Idle means: idle-deck can reach the model | accepted (from D5) |
+| [0003](0003-idle-is-a-probe.md) | Idle means: idle-deck can reach the model | superseded by [0016](0016-idle-probed-at-the-harness.md) |
 | [0004](0004-never-name-a-model.md) | idle-deck never names a model | accepted (from D6) |
 | [0005](0005-one-harness-adapter.md) | Exactly one harness adapter in the MVP | accepted (from D7) |
 | [0006](0006-models-on-a-separate-server.md) | Models run on a server separate from the workstation | accepted (from D20) |
@@ -137,20 +137,39 @@ they were defined — is exactly what this prevents. When CI lands (#11), this b
 | [0013](0013-harness-lifecycle.md) | Harness interface is execution lifecycle only; workspace ownership deferred to #8 | accepted (from D26) |
 | [0014](0014-remote-execution-service-contract.md) | Remote execution service contract: workspace is remote, contract is typed and pull-based | accepted (from D27) |
 | [0015](0015-github-event-contract.md) | GitHub event contract: idle-deck polls, labels trigger tiers, dedupe is a stable resource key | accepted (from D28, D29, D30) |
+| [0016](0016-idle-probed-at-the-harness.md) | Idle is probed at the harness's `/health`, and `/health` must report model reachability | accepted (from D31) |
+| [0017](0017-the-artifact.md) | One static cgo-free binary, main package at the repo root, installed with `go install` | accepted (from D32) |
 
-## The first real supersession
+## Supersessions, and what they cost
 
-The supersede path is now **exercised**. [GitHub event contract
-#9](https://github.com/seppaleinen/idle-deck/issues/9) chose polling, which falsified ADR 0007's
-"the repository comes from the webhook's own origin" — so 0007 is `superseded` and 0015 carries the
-decision forward, with 0007's body untouched and its deny-by-default intent preserved in D30. Table
-tier, D12 → D30, in the same move.
+The path is now **exercised twice**, and the two cases are not the same shape.
 
-Two earlier candidates passed without becoming supersessions, which is worth recording as evidence the
-rule is not trigger-happy: [Architecture boundaries
-#6](https://github.com/seppaleinen/idle-deck/issues/6) **confirmed** D18 (Go interface naming,
-`Harness` not `BaseHarness`) rather than replacing it, and [Remote execution service
-contract #8](https://github.com/seppaleinen/idle-deck/issues/8) decided the workspace question
-*under* the harness interface (D27/ADR 0014) instead of changing it — ADR 0013 still stands
-unchanged. The ADR-tier decision most likely to be tested next is the [queue
+**0007 → 0015** ([GitHub event contract #9](https://github.com/seppaleinen/idle-deck/issues/9)):
+polling falsified "the repository comes from the webhook's own origin" outright, so the old ADR's
+*mechanism* was simply untrue. Its deny-by-default intent survived as D30. Table tier, D12 → D30, in
+the same move.
+
+**0003 → 0016** ([Install, run, configure #11](https://github.com/seppaleinen/idle-deck/issues/11)):
+the harder case. "Idle means idle-deck can reach the model" is *still true* — what moved was the
+probe, from the inference server to the harness's `/health`. A supersession is not only for when a
+decision is falsified; it is for when the part of a decision someone will quote has changed. Had
+0016 been written as a table-tier note, ADR 0003 would have remained `accepted` while its own body
+said "it probes the inference server" — and the remote contract already said otherwise, so the
+project would have held two documents that each looked authoritative and disagreed.
+
+That case also produced a **cross-ticket leak** worth naming as a category: #8 had already routed
+the idle probe to `/health` without amending 0003, and it took #11 — a ticket about the *operator
+surface* — to notice. A convention that is never exercised has no evidence it works, and a decision
+made as a side effect of another ticket can sit inconsistent for a long time.
+
+**Two candidates passed without becoming supersessions**, which is evidence the rule is not
+trigger-happy: [Architecture boundaries #6](https://github.com/seppaleinen/idle-deck/issues/6)
+**confirmed** D18 (Go interface naming, `Harness` not `BaseHarness`) rather than replacing it, and
+[Remote execution service contract #8](https://github.com/seppaleinen/idle-deck/issues/8) decided
+the workspace question *under* the harness interface (D27/ADR 0014) instead of changing it — ADR
+0013 still stands unchanged. Note the asymmetry with the 0003 case: 0013 was left alone because
+nothing in it became untrue, whereas 0003 was superseded because a sentence in it became untrue.
+That is the line.
+
+The ADR-tier decision most likely to be tested next is the [queue
 lease](0011-queue-lease.md), when a second queue implementation is considered.

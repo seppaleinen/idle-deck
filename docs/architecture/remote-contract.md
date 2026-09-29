@@ -13,6 +13,15 @@ error taxonomy, and one worked example per result shape.
 [D29](https://github.com/seppaleinen/idle-deck/blob/main/AGENTS.md) — `idle-ready`, not `status: ready`
 — as fixed by [GitHub event contract #9](https://github.com/seppaleinen/idle-deck/issues/9).
 
+**Amended twice, on the authority of new decisions** (this file states that a deviation from its
+locked status "is a new decision", so neither edit below was made in place):
+
+- `GET /health` must report **model reachability**, not process liveness — [ADR
+  0016](../adr/0016-idle-probed-at-the-harness.md), from [Install, run, configure
+  #11](https://github.com/seppaleinen/idle-deck/issues/11).
+- `budget` is a **generation-token ceiling**; the field was previously unit-less — **D36**, same
+  ticket.
+
 ---
 
 ## 0. Workspace ownership — the root answer
@@ -65,7 +74,16 @@ All under `{base_url}/v1`.
 | `POST /runs` | `Start` | Create a run (idempotent by `attempt_id`). |
 | `GET /runs/{id}` | `Result` (adapter polls internally) | Status while running; terminal result + artifacts when done. |
 | `DELETE /runs/{id}` | `Abort` | Cancel a running run; `204` only when confirmed dead. |
-| `GET /health` | `IdlePolicy` probe (D5) | If it answers, the engine is considered idle. |
+| `GET /health` | `IdlePolicy` probe (D5, D31) | If it answers, the engine is considered idle. **Must reflect model reachability, not merely process liveness** — see below. |
+
+---
+
+**`/health` is a reachability probe, not a heartbeat.** It must answer only when the remote can
+actually reach a model. A harness process that is alive while the model endpoint is down, rate
+limited, or out of credentials is **not idle**, and a plain liveness ping would report it as idle —
+idle-deck would then start a run that fails immediately, having certified the machine was free. This
+is the one semantic requirement ADR 0016 attaches to the endpoint, and it is what makes "if it
+answers" mean what D5 means by "idle-deck can reach the model".
 
 ---
 
@@ -78,7 +96,7 @@ Request body:
   "attempt_id": "c73d8f2a-...",        // idempotency key = TaskAttempt.id
   "role": "do",                        // plan | do | sweep — NEVER a model name (D6, I11)
   "prompt": "Implement ... and open a PR.",
-  "budget": 100000,                    // ceiling the harness respects (field travels; policy is fog)
+  "budget": 100000,                    // GENERATION TOKENS — ceiling the harness respects (D36)
   "timeout_seconds": 10800,            // server enforces this (D17); tier default comes from idle-deck
   "repository": {
     "id": "repo-1",

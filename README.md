@@ -83,16 +83,24 @@ once the backlog in [MVP backlog](https://github.com/seppaleinen/idle-deck/issue
 
 The intended shape, when it exists:
 
-- **Install a single Go binary.** `go install` or a release artifact. No runtime to set up.
+- **Install a single Go binary.** `go install github.com/seppaleinen/idle-deck@latest`. Static, no
+  cgo, so nothing else is needed on the machine — no runtime, no container, no C toolchain
+  ([D32](https://github.com/seppaleinen/idle-deck/blob/main/AGENTS.md)).
 - **Point it at one remote execution service** and one or more GitHub repositories.
 - **Single user, single machine.** No accounts, no multi-tenancy, no RBAC. Those are deliberate
   non-goals for the MVP, not oversights ([D4](https://github.com/seppaleinen/idle-deck/blob/main/AGENTS.md)).
-- **CLI only.** `idle-deck daemon`, `idle-deck queue ls`, `idle-deck status`, and job inspection and
-  manual retry. A GUI is post-MVP
+- **CLI only.** Four commands — `run`, `status`, `check`, `--version` — and no GUI, post-MVP
   ([D19](https://github.com/seppaleinen/idle-deck/blob/main/AGENTS.md),
-  [#2](https://github.com/seppaleinen/idle-deck/issues/2)).
-- **Configuration is env-first**, with an optional YAML file and CLI flags overriding both
-  ([D23](https://github.com/seppaleinen/idle-deck/blob/main/AGENTS.md)).
+  [#2](https://github.com/seppaleinen/idle-deck/issues/2)). There is no health *endpoint*: idle-deck
+  has no listening socket, so health is a command that reads local state
+  ([D33](https://github.com/seppaleinen/idle-deck/blob/main/AGENTS.md)).
+- **Configuration is environment variables and flags.** No config file in the MVP
+  ([D34](https://github.com/seppaleinen/idle-deck/blob/main/AGENTS.md)).
+- **Supervised by a documented `launchd` LaunchAgent** — per-user, no root, and restart-on-crash
+  without restart-on-clean-exit ([D35](https://github.com/seppaleinen/idle-deck/blob/main/AGENTS.md)).
+- **Tokens come from the environment and nowhere else.** No `.env` file, no secrets written to the
+  database, rotation is rotate-and-restart
+  ([D36](https://github.com/seppaleinen/idle-deck/blob/main/AGENTS.md)).
 
 A day in the life, once built: you open an issue and idle-deck's P1 tier posts a clarification
 checklist back within minutes. You answer it, apply `idle-ready`, and go to bed. You wake up to a
@@ -147,7 +155,8 @@ harness, CLI-first ([D9](https://github.com/seppaleinen/idle-deck/blob/main/AGEN
 [D13](https://github.com/seppaleinen/idle-deck/blob/main/AGENTS.md)).
 
 There is no CI yet, no build, and no test suite. Adding them is a cross-cutting item in the backlog
-([Install, run, configure](https://github.com/seppaleinen/idle-deck/issues/11)).
+([Install, run, configure](https://github.com/seppaleinen/idle-deck/issues/11)) — now locked, in
+[`docs/operations/operator-surface.md`](docs/operations/operator-surface.md).
 
 ### If you are about to build something
 
