@@ -82,7 +82,10 @@ pointer. Nothing is silently rewritten. The only mutable field on an ADR is its 
 | id | Decision | Rationale |
 |---|---|---|
 | **D9** | **Go 1.27** (installed locally: `go1.27.1 darwin/arm64`). | [ADR 0010](docs/adr/0010-go.md) |
-| **D18** | Go interface naming follows Go convention (`Harness`, not `BaseHarness`) — **pending** confirmation in [Architecture boundaries #6](https://github.com/seppaleinen/idle-deck/issues/6). | Issue #1's `Base*` prefix is not idiomatic. |
+| **D18** | Go interface naming follows Go convention (`Harness`, not `BaseHarness`). **Confirmed** in [Architecture boundaries #6](https://github.com/seppaleinen/idle-deck/issues/6): interfaces are named by behaviour; `Base*` is dead. | Issue #1's `Base*` prefix is not idiomatic. |
+| **D24** | **Queue dequeue is a lease, never a pop.** Expiry without ack is recorded as `timeout` on the abandoned attempt and the task is re-queued, consuming one retry. No lost-task path. | [ADR 0011](docs/adr/0011-queue-lease.md) |
+| **D25** | The tracker seam splits into **`TrackerSource`** (inbound parse, allowlist gate I1) and **`TrackerSink`** (outbound comment/label), one GitHub implementation. PR production is the harness's, not the tracker's (I4). | [ADR 0012](docs/adr/0012-tracker-split.md) |
+| **D26** | The **`Harness`** interface is execution lifecycle only — `Start` / `Abort` / `Result` over a remote execution service, carrying a role never a model. No `prepare_workspace`, no local git. Workspace ownership is deferred to #8. | [ADR 0013](docs/adr/0013-harness-lifecycle.md) |
 
 ### Configuration
 
@@ -101,12 +104,13 @@ pointer. Nothing is silently rewritten. The only mutable field on an ADR is its 
 - **P0 and P3 have no trigger.** Both tiers exist in the ontology; nothing produces them. A gap in the
   event contract, not the ontology — [#9](https://github.com/seppaleinen/idle-deck/issues/9).
 - **The remote contract is not written.** [#8](https://github.com/seppaleinen/idle-deck/issues/8).
-  Notably unresolved: **does the workspace live on the remote side or locally?** Two incompatible
-  architectures currently share one interface name. Invariant I8 (a running attempt is abortable via
-  its session handle) is the obligation this imposes on the harness.
-- **Queue lease semantics are the highest-consequence unknown.** Dequeue-while-running must either be a
-  lease that expires (a daemon crash cannot strand a task) or a destructive pop that loses it. The whole
-  fault-tolerance story depends on the answer. [#6](https://github.com/seppaleinen/idle-deck/issues/6).
+  Notably unresolved: **does the workspace live on the remote side or locally?** The interface no
+  longer smuggles an answer — [D26](docs/adr/0013-harness-lifecycle.md) made the harness lifecycle-only
+  (`Start`/`Abort`/`Result`), so #8 is a pure content decision, not a redesign. Invariant I8 (a
+  running attempt is abortable via its session handle) is the obligation this imposes on the harness.
+- **Queue lease semantics — resolved.** Dequeue is a lease with expiry (D24, [ADR
+  0011](docs/adr/0011-queue-lease.md)): expiry without ack records `timeout` on the abandoned attempt
+  and re-queues, consuming one retry. A daemon crash cannot strand a task.
 
 ## Related
 

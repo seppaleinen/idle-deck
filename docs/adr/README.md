@@ -132,10 +132,15 @@ they were defined — is exactly what this prevents. When CI lands (#11), this b
 | [0008](0008-minimal-interfaces-one-implementation.md) | Minimal interfaces, one concrete implementation each | accepted (from D13) |
 | [0009](0009-two-retries-then-escalate.md) | Two automated retries, then escalate | accepted (from D14) |
 | [0010](0010-go.md) | Go 1.27 | accepted (from D9) |
+| [0011](0011-queue-lease.md) | Queue dequeue is a lease, never a pop | accepted (from D24) |
+| [0012](0012-tracker-split.md) | Tracker split: inbound parser and outbound writer are separate interfaces | accepted (from D25) |
+| [0013](0013-harness-lifecycle.md) | Harness interface is execution lifecycle only; workspace ownership deferred to #8 | accepted (from D26) |
 
 ## Next real supersession
 
-The next ADR-tier decision to *test* the supersede path is **D18** (Go interface naming, `Harness`
-not `BaseHarness`), currently pending confirmation in
-[Architecture boundaries #6](https://github.com/seppaleinen/idle-deck/issues/6). If #6 rejects the
-convention, D18 gets superseded by a new D-id — the first real, non-demo supersession.
+The supersede path has been **confirmed intact** — not yet exercised. [Architecture boundaries
+#6](https://github.com/seppaleinen/idle-deck/issues/6) **confirmed D18** (Go interface naming,
+`Harness` not `BaseHarness`) rather than replacing it, so no ADR had to flip. The first real
+supersession is still to come; the ADR-tier decision most likely to be tested is the
+[queue lease](0011-queue-lease.md) when a second queue implementation is considered, or a harness
+lifecycle change if the remote contract (#8) forces one.
