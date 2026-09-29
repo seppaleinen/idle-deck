@@ -167,6 +167,33 @@ override one value for one run without editing anything.
 | `IDLE_DECK_GITHUB_API` | `https://api.github.com` | also serves GitHub Enterprise |
 | `IDLE_DECK_RETRY_BACKOFF_INITIAL` | `30s` | D37 |
 | `IDLE_DECK_RETRY_BACKOFF_MAX` | `10m` | D37 |
+| `IDLE_DECK_SWEEP_PERIOD` | `168h` (7 days) | D43; `0` disables sweeping entirely |
+| `IDLE_DECK_SWEEP_REPOS` | *unset* = every allowlisted repo | D43; a narrowing subset, never a second allowlist |
+| `IDLE_DECK_SWEEP_PROMPT` | the stale-TODO/FIXME default below | D43 |
+
+`IDLE_DECK_SWEEP_PERIOD` is the **bucket period**, and it is operator-owned rather than a built-in
+schedule. `0` is the global kill switch. There is no adaptive backoff: a sweep that finds nothing
+every night does get muted, and that risk is answered by a config value the operator controls, not by
+machinery whose behaviour cannot be observed from outside and which would make the dedupe key's period
+change over time ([D43](../adr/0019-p3-sweep-policy.md)).
+
+`IDLE_DECK_SWEEP_REPOS` is a **narrowing subset** of `IDLE_DECK_REPOS`, not a second allowlist. The
+allowlist still governs *access* (D30/I1); this governs only *which allowed repositories also get P3*.
+Unset means every allowlisted repository is swept — which is why "watched" and "swept" are the same
+set by default and separable by choice, rather than being the same thing by construction.
+
+`IDLE_DECK_SWEEP_PROMPT` is what the sweep looks for, and the shipped default is deliberately narrow:
+
+> Scan the repository for `TODO` and `FIXME` markers. For each, report the file, line, the marker's
+> age in days, and whether the surrounding file has changed more recently than the marker was added.
+> Report only markers older than 90 days. Produce a report; make no changes.
+
+Each candidate policy the sweep ticket considered — dependency drift, flakiness, coverage, open README
+questions — is a **different job**, and "find problems in this repo" is not a job at all. The default
+is a *finding*, not a *judgment*, because an unattended 20,000-token run whose output cannot be
+checked against the repository is not auditable. The prompt is text idle-deck passes to the harness;
+it **cannot** instruct a tracker write, because what a sweep may do about a finding is a rule idle-deck
+enforces (D43), not something the prompt can grant.
 
 `IDLE_DECK_GITHUB_API` is **not a test-only affordance**. Pointing the tracker adapter at a different
 API base is exactly what GitHub Enterprise requires, so it earns its place on its own merits; §9 then
@@ -387,8 +414,9 @@ adopt before there is code to lint.
 - **The macOS Keychain** — hardening for a future multi-user idle-deck (§7).
 - **A YAML config file** — D23 permits it; the MVP does not build it (§4).
 - **A CLI tier override for `idle-redo`** — still deferred; `idle-redo` is the affordance (§5).
-- **What a P3 sweep actually does** — the trigger and its plumbing are here (a configured
-  placeholder prompt, a period bucket); the *job* is its own ticket.
+- **What a P3 sweep looks for** — the *mechanism* is decided ([D43](../adr/0019-p3-sweep-policy.md)):
+  `IDLE_DECK_SWEEP_PROMPT`, with a narrow shipped default. The *content* is the operator's, by
+  construction — there is no built-in policy catalogue, and adding one would be a new decision.
 - **Live cancellation and a `stop`/`requeue` surface** — post-MVP by the ontology's own cut.
 - **A second harness adapter, and SSE** — the MVP ships one adapter and makes no pluggability claim
   (D40). A second is gated on a named trigger list, and the **conformance suite** (D41) is what

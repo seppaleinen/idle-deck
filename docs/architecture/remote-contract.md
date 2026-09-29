@@ -320,8 +320,8 @@ Worker: outcome → `succeeded`, `Ack`. **I4 is satisfied structurally** — the
 
 ### 8c. P3 — idle sweep → `report` artifact, and preemption
 
-A P3 sweep runs (`role: sweep`) looking for, e.g., stale TODOs per the (still foggy) sweep policy.
-Then a P0 hotfix arrives.
+A P3 sweep runs (`role: sweep`) looking for stale TODO/FIXME markers per the configured sweep
+prompt ([D43](../adr/0019-p3-sweep-policy.md)). Then a P0 hotfix arrives.
 
 ```http
 POST /v1/runs
@@ -332,9 +332,17 @@ POST /v1/runs
   "budget": 20000,
   "timeout_seconds": 3600,
   "repository": { "id": "repo-1", "name": "owner/awesome", "url": "https://github.com/owner/awesome.git", "tracker": "github" },
-  "ticket": { "tracker": "github", "external_id": "101", "url": "https://github.com/owner/awesome/issues/101" }
+  "ticket": null
 }
 ```
+
+**`ticket` is `null` for a sweep, and that is the only tier where it may be** ([D44](../adr/0019-p3-sweep-policy.md)).
+A sweep is enqueued by a local scheduler with no GitHub query, so no issue exists yet and there is
+nothing to point at. A request carrying a non-null `ticket` for a `sweep` role is a non-retryable
+protocol violation, exactly as a `pull_request` artifact on a sweep run is — the two are the same
+kind of error, a request that contradicts the locked domain. An earlier revision of this example
+carried `"external_id": "101"`, which contradicted D28's trigger decision; the fiction is corrected
+here rather than left to look like a real reference.
 
 It completes quietly:
 
@@ -349,6 +357,21 @@ It completes quietly:
   ]
 }
 ```
+
+**The `report` artifact carries no inline body, and that is the reason a sweep files issues rather
+than leaving one** ([D43](../adr/0019-p3-sweep-policy.md)). Nothing in idle-deck can read that URI:
+`Harness` is `Start`/`Abort`/`Result` (D26, no fetch), the workspace is on the remote (D27), and
+`status` never surfaces artifacts. A report-only sweep would spend its 20,000-token budget writing a
+file the operator can neither retrieve nor see. So the report's **content** is filed as **one issue
+per finding**, carrying `idle-needs-human` so P1 does not re-ingest it (D45) and the finding reaches
+a human where they already work.
+
+**A `sweep`-role run may not return `pull_request`, and may not return a `branch` with
+`branch_purpose: feature`.** Either is a **non-retryable protocol violation** — not a failed run, and
+not one to escalate, because the remote broke a stated contract and a retry would break it identically.
+The feature-branch prohibition is D15's corollary: `feature/<ticket_id>-<slug>` needs a `ticket_id`,
+and a sweep has none (D44). A sweep that finds something serious reaches a Draft PR the ordinary way
+— the human applies `idle-ready` to the issue the sweep filed, and that becomes a P2.
 
 **Preemption (D16/I7) — the same sweep, interrupted** by a P0 above it in the queue. The worker
 selects on `Queue.Events`, calls `Abort`, then wraps up:

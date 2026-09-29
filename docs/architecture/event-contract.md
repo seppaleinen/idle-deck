@@ -93,7 +93,7 @@ cursor entity would be modelling the ingestion mechanism, not the domain.
 | Tier | Role | Trigger | Source | Notes |
 |---|---|---|---|---|
 | **P0** | `do` | `idle-hotfix` label applied | label query | Preempts a running P2 (D16/I7) |
-| **P1** | `plan` | Issue created | watermark query, `created_at > watermark` | Bot-authored issues excluded |
+| **P1** | `plan` | Issue created | watermark query, `created_at > watermark` | Bot-authored **and `idle-needs-human`-labelled** issues excluded (D45) |
 | **P2** | `do` | `idle-ready` label applied | label query | The ordinary path |
 | **P3** | `sweep` | Local scheduler tick | no query at all | At most one queued/running per repository per bucket (§5) |
 | *(redefinition)* | *P1 default* | `idle-redo` label applied | label query | New task, `derived_from` the escalated one, fresh retry budget (I9) |
@@ -105,9 +105,20 @@ loop-prevention rules are identical to P2's. A CLI enqueue would need a second i
 its own provenance, and a task with no issue behind it has nowhere to point — the ontology requires
 every `Task` to carry a `TrackerRef`.
 
-**P1 — issue creation, with bot-authored issues excluded.** This is the product's premise: file an
-issue, walk away, find a plan waiting. `user.type == "Bot"` issues are skipped, or Dependabot filing
-in an allowlisted repository would cost a plan run each time.
+**P1 — issue creation, with two exclusions.** This is the product's premise: file an issue, walk
+away, find a plan waiting. `user.type == "Bot"` issues are skipped, or Dependabot filing in an
+allowlisted repository would cost a plan run each time.
+
+The second exclusion is **loop-freedom** ([D45](../adr/0019-p3-sweep-policy.md)): **idle-deck never
+re-ingests an artifact it produced**, so P1 skips any issue carrying `idle-needs-human`. A P3 sweep
+files its findings as issues carrying exactly that label, and this is what stops the sweep from
+reading back its own write.
+
+Stating it as loop-freedom rather than as bot-detection is the load-bearing part. A single-user
+deployment (D4) plausibly authenticates with a **human** account, in which case `user.type == "Bot"`
+does not fire and a sweep's issue would become an unattended P1 at 5,000 tokens a pop. Bot-detection
+is a property of the credential; loop-freedom is a property of the system, and only the second
+survives a human PAT.
 
 **P2 — a label.** Unchanged from #1.
 

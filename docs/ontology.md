@@ -50,7 +50,7 @@ The durable, **immutable** statement of intent: *do this work, for this reposito
 |---|---|---|---|
 | `id` | identifier | yes | Stable. Appears in branch names (D15). |
 | `repository_id` | → `Repository` | yes | Never a URL string. |
-| `ticket` | `TrackerRef` | yes | Value object, see below. |
+| `ticket` | `TrackerRef` | yes, **except P3** | Value object, see below. A sweep is the one exception ([D44](adr/0019-p3-sweep-policy.md)): the task exists when the scheduler ticks, before any run, so there is no issue to point at. The issue a sweep *files* is a different task's ticket, not this one's. |
 | `tier` | `TaskTier` | yes | Authoritative priority. |
 | `prompt` | string | yes | What the agent is asked to do. |
 | `payload` | object | no | Free-form tier-specific data (checklist state, etc). |
@@ -343,8 +343,17 @@ Recorded so they are visible rather than assumed away.
   execution service contract #8](https://github.com/seppaleinen/idle-deck/issues/8) settled it: **the
   workspace lives on the remote** (D27, [ADR 0014](adr/0014-remote-execution-service-contract.md));
   `remote_session_id` stays as-is and equals the remote's `run_id`.
-- **Sweep policy.** What a sweep looks for, and whether it may ever open a PR, is undecided. The
-  trigger exists; the job does not.
+- **Sweep policy — resolved.** [What does a P3 idle sweep do?
+  #13](https://github.com/seppaleinen/idle-deck/issues/13) settled the job: a sweep is a **reporter,
+  not an author**. It looks (a configured prompt, narrow default: stale TODO/FIXME with age and
+  last-touched context), files **one issue per finding** labelled `idle-needs-human`, and stops. It
+  may **never** open a pull request — a `pull_request` artifact on a `sweep` run is a non-retryable
+  protocol violation, and D15 has no `ticket_id` for `feature/<ticket_id>-<slug>` — and it may
+  **never escalate**, because idle-deck never re-ingests its own writes (D45). Cadence is
+  `IDLE_DECK_SWEEP_PERIOD` (default `168h`, `0` disables), with `IDLE_DECK_SWEEP_REPOS` as a narrowing
+  subset of the allowlist. The one thing this document itself contributed is D44: `Task.ticket` is
+  now conditionally required, because the model listed `schedule.sweep` in `TriggeredBy.event_type`
+  and then made mandatory the one field a sweep cannot supply.
 - **Cancellation.** `aborted` is reserved. The reserved outcome is named; the feature is not designed.
   Consequently **closing a GitHub issue does not cancel its task** — `TaskState` has nowhere to put
   "dropped", and changing a closed value set is a migration (see the event contract).
@@ -353,7 +362,7 @@ Recorded so they are visible rather than assumed away.
 
 ## Related
 
-- [`AGENTS.md`](../AGENTS.md) — recorded decisions, `D1`–`D29`.
+- [`AGENTS.md`](../AGENTS.md) — recorded decisions, `D1`–`D45`.
 - [Wayfinder map #3](https://github.com/seppaleinen/idle-deck/issues/3) — the live plan.
 - [Architecture boundaries](https://github.com/seppaleinen/idle-deck/issues/6) — the four interfaces.
 - [Remote execution service contract](https://github.com/seppaleinen/idle-deck/issues/8) — I8's enforcer.

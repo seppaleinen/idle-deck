@@ -75,6 +75,10 @@ flips and `Related:` is correctable (**D42**) — the rest is frozen.
 | **D28** | **The event contract**: idle-deck **polls** (60s, conditional requests, no inbound surface, no signature to verify); one watermark per repo seeded at first observation; every tier has a trigger; **dedupe is a stable resource key**; the trigger label is removed on any terminal state; the prompt is the issue's title and body verbatim; closing an issue does nothing. | [ADR 0015](docs/adr/0015-github-event-contract.md). Contract in [`docs/architecture/event-contract.md`](docs/architecture/event-contract.md). |
 | **D29** | **Label vocabulary**: `idle-hotfix`, `idle-ready`, `idle-redo`, `idle-needs-human`. Lowercase, hyphens, no space/colon/slash, all `idle-`-prefixed. | [ADR 0015](docs/adr/0015-github-event-contract.md). The prefix is **collision safety**, not style: a bare `ready` would hijack a repo's own label vocabulary and silently spawn agent runs. Normalises D14's `status: needs-human` literal; D14's behaviour is untouched. |
 
+| **D43** | A P3 sweep **files one issue per finding**, labelled `idle-needs-human`, and may **never** open a PR or produce a `feature` branch. Both are non-retryable protocol violations. The sweep's lens is a **configured prompt** with a narrow default (stale TODO/FIXME with age and last-touched context); cadence is `IDLE_DECK_SWEEP_PERIOD` (default `168h`, `0` disables), with `IDLE_DECK_SWEEP_REPOS` as a narrowing subset of the allowlist. No adaptive backoff. | [ADR 0019](docs/adr/0019-p3-sweep-policy.md). A sweep is a **reporter, not an author**: it finds work, never does it, and the route to a Draft PR runs through a human applying `idle-ready`. The PR prohibition is D15's corollary — `feature/<ticket_id>-<slug>` has no `ticket_id` for a sweep to put there. The config-over-built-in choices answer the ticket's mute risk with a value the operator owns, rather than with machinery nobody can observe from outside. |
+| **D44** | **`Task.ticket` is required for every tier except P3**, where it is null. | [ADR 0019](docs/adr/0019-p3-sweep-policy.md). Amends the ontology. A sweep's task exists when the scheduler ticks, before any run, so no issue exists to point at; the issue a sweep *files* is a different task's ticket. The ontology already listed `schedule.sweep` in `TriggeredBy.event_type` and then made mandatory the one field a sweep cannot supply — the model anticipated sweeps and had no way to say so. |
+| **D45** | **idle-deck never re-ingests an artifact it produced.** P1 skips issues carrying `idle-needs-human`, so a sweep cannot read back its own write. | [ADR 0019](docs/adr/0019-p3-sweep-policy.md). Stated as loop-freedom rather than as bot-detection because the existing `user.type == "Bot"` guard is a property of the **credential**, and D4 makes a human account the likely one — under which a sweep's issue would become an unattended P1 at 5,000 tokens a pop. Bot-detection was already known not to cover idle-deck's own label writes; this makes the invariant general instead of a property of the one case that happened to be safe. |
+
 ### Naming and lifecycle conventions
 
 | id | Decision | Rationale |
@@ -129,10 +133,11 @@ flips and `Related:` is correctable (**D42**) — the rest is frozen.
   observation, the configured repo list is the allowlist (D30), a stable resource dedupe key, the
   trigger label removed on any terminal state, and the prompt is the issue's title and body verbatim.
   **Every tier now has a trigger** — `idle-hotfix` (P0), issue creation (P1), `idle-ready` (P2), a
-  local scheduler (P3), `idle-redo` (redefinition); labels are D29. Still open: **what a P3 *sweep*
-  does** (its own ticket, [#13](https://github.com/seppaleinen/idle-deck/issues/13)) and live
-  cancellation. Cost/rate-limit policy, secrets lifecycle, and label colours are **closed** — D37, D36,
-  and D39 on the operator surface.
+  local scheduler (P3), `idle-redo` (redefinition); labels are D29. Live cancellation is still open.
+  Cost/rate-limit policy, secrets lifecycle, and label colours are **closed** — D37, D36,
+  and D39 on the operator surface. **What a P3 sweep does is now closed too** — D43/D44/D45,
+  [ADR 0019](docs/adr/0019-p3-sweep-policy.md): a sweep is a *reporter*, filing one issue per
+  finding, never a PR, never re-ingesting its own write.
 - **The remote contract is locked.** [#8](https://github.com/seppaleinen/idle-deck/issues/8) —
   **the workspace lives on the remote** (D27, [ADR 0014](docs/adr/0014-remote-execution-service-contract.md),
   wire contract at `docs/architecture/remote-contract.md`): typed results, idempotency by
