@@ -104,7 +104,8 @@ instead of a silent failure.
 ### Read these, in order
 
 1. **[`AGENTS.md`](AGENTS.md)** — every decision, with its rationale and a stable id. Read it first,
-   every session.
+   every session. The ADR convention and the multi-behavioural decisions' detail live in
+   [`docs/adr/README.md`](docs/adr/README.md).
 2. **[Map #3](https://github.com/seppaleinen/idle-deck/issues/3)** — the live plan. Destination, notes,
    closed decisions, and fog.
 3. **[#1 Architecture Handover & Domain Ontology](https://github.com/seppaleinen/idle-deck/issues/1)**

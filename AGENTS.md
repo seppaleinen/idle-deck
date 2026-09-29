@@ -6,16 +6,24 @@ Decisions, recorded. Read this before touching idle-deck.
 architecture is being locked down on [Wayfinder map #3](https://github.com/seppaleinen/idle-deck/issues/3).
 Do not start implementing until the map's first lock lands.
 
-## How decisions are recorded (provisional)
+## How decisions are recorded
 
 Every decision gets a stable `D<n>` id so issues, PRs, and commit messages can point at it without
-prose duplication. A decision lives in exactly one place — this table — and is referenced elsewhere by
-id. Decisions are additive; a changed decision gets a **new** id marked *supersedes*, and the old one
-is marked *superseded* with a pointer. Nothing is silently rewritten.
+prose duplication. Decisions live in **one of two tiers**:
 
-> This scheme is provisional. [Decision record #7](https://github.com/seppaleinen/idle-deck/issues/7)
-> decides whether `AGENTS.md` is the permanent home or whether these graduate into `docs/adr/`. Until
-> then, record here.
+- **ADR tier** — decisions that are expensive to reverse (changing them would change how two or more
+  other decisions behave). Detail lives in `docs/adr/NNNN-title.md`; `AGENTS.md` keeps the index row.
+- **Table tier** — scoping/policy decisions. The row here is the whole record, with rationale in the
+  same row.
+
+The full convention — tiers, file format, immutability, statuses, superseding, and the D-id
+verification check — is in [`docs/adr/README.md`](docs/adr/README.md). Decisions are additive; a
+changed decision gets a **new** id marked *supersedes*, and the old one is marked *superseded* with a
+pointer. Nothing is silently rewritten. The only mutable field on an ADR is its `Status:` header.
+
+> Convention locked by [Decision record #7](https://github.com/seppaleinen/idle-deck/issues/7).
+> Requires: implementers cite their D-refs on issues; reviewers check them. The D-id verification
+> check must pass before any push touching `AGENTS.md` or `docs/adr/`.
 
 ## Decisions
 
@@ -40,25 +48,25 @@ is marked *superseded* with a pointer. Nothing is silently rewritten.
 
 | id | Decision | Rationale |
 |---|---|---|
-| **D10** | Issue #1's ontology is a **revisable draft, not binding**. The domain model is re-derived, not inherited. | A handover that mixes domain, policy, and implementation choice rots. Locking #1 would lock its confusions in. |
-| **D11** | The ontology is a **standalone document** ([`docs/ontology.md`](docs/ontology.md)), separated from policy and from implementation choice. | Domain model, operational policy, and MVP choices have different lifetimes. Merging them is what makes handovers rot. |
+| **D10** | Issue #1's ontology is a **revisable draft, not binding**. The domain model is re-derived, not inherited. | [ADR 0002](docs/adr/0001-ontology-revisable.md) |
+| **D11** | The ontology is a **standalone document** ([`docs/ontology.md`](docs/ontology.md)), separated from policy and from implementation choice. | [ADR 0002](docs/adr/0002-ontology-standalone-document.md) |
 
 ### Models and idle
 
 | id | Decision | Rationale |
 |---|---|---|
-| **D5** | **Idle means: idle-deck can reach the model.** It probes the inference server; if it answers, the engine is considered idle. No platform idle heuristics. | Replaces hand-waving with a testable signal. Injectable, not hardcoded to macOS. |
-| **D6** | **idle-deck never names a model.** It passes a *role* (`plan` / `do` / `sweep`) plus a budget to the harness. The harness decides the model. | Kills the Brain-vs-Worker box from issue #1. Model choice is an adapter concern. |
-| **D7** | MVP ships **exactly one** harness adapter, talking to a remote execution service over JSON/HTTP. | Deepest cut available. Whether "framework-agnostic" is honest with one adapter is ticket [#12](https://github.com/seppaleinen/idle-deck/issues/12). |
-| **D20** | Models run on a **server separate from the workstation**. idle-deck orchestrates; it does not host inference. | Settles the VRAM question from issue #1 — this hardware has no NVIDIA GPU. |
+| **D5** | **Idle means: idle-deck can reach the model.** It probes the inference server; if it answers, the engine is considered idle. No platform idle heuristics. | [ADR 0003](docs/adr/0003-idle-is-a-probe.md) |
+| **D6** | **idle-deck never names a model.** It passes a *role* (`plan` / `do` / `sweep`) plus a budget to the harness. The harness decides the model. | [ADR 0004](docs/adr/0004-never-name-a-model.md) |
+| **D7** | MVP ships **exactly one** harness adapter, talking to a remote execution service over JSON/HTTP. | [ADR 0005](docs/adr/0005-one-harness-adapter.md) |
+| **D20** | Models run on a **server separate from the workstation**. idle-deck orchestrates; it does not host inference. | [ADR 0006](docs/adr/0006-models-on-a-separate-server.md) |
 
 ### Adapters and the event pipeline
 
 | id | Decision | Rationale |
 |---|---|---|
-| **D13** | **Minimal interfaces, one concrete implementation each**: GitHub tracker, SQLite queue, one remote harness. | Prevents premature generality while keeping the seams real. |
-| **D12** | **Multi-repo, event-driven.** The repository comes from the webhook's own origin. Deny-by-default allowlist. | The repository field is derived, not configured per task. The allowlist is a safety rail, not a feature. |
-| **D14** | **Two automated retries**, then escalate: preserve the debug branch, comment diagnostics, apply `status: needs-human`, drop from queue. | From issue #1, stated unambiguously. Non-retryable failures escalate without burning retries. |
+| **D13** | **Minimal interfaces, one concrete implementation each**: GitHub tracker, SQLite queue, one remote harness. | [ADR 0008](docs/adr/0008-minimal-interfaces-one-implementation.md) |
+| **D12** | **Multi-repo, event-driven.** The repository comes from the webhook's own origin. Deny-by-default allowlist. | [ADR 0007](docs/adr/0007-multi-repo-event-driven.md) |
+| **D14** | **Two automated retries**, then escalate: preserve the debug branch, comment diagnostics, apply `status: needs-human`, drop from queue. | [ADR 0009](docs/adr/0009-two-retries-then-escalate.md) |
 | **D17** | `TaskItem.timeout_seconds` **overrides** the tier default when set. A killed or preempted run counts as a retryable failure. | Explicit beats implicit. Timeouts are load-bearing. |
 | **D16** | With one worker, a **P0 aborts the running P2** and takes the slot. Aborted runs follow normal retry/escalation. | Makes "immediate preemption" real at `max_concurrent_jobs: 1`. |
 
@@ -73,7 +81,7 @@ is marked *superseded* with a pointer. Nothing is silently rewritten.
 
 | id | Decision | Rationale |
 |---|---|---|
-| **D9** | **Go 1.27** (installed locally: `go1.27.1 darwin/arm64`). | A long-running daemon with a worker pool and subprocess supervision is exactly Go's strength; a single static binary suits a personal daemon. |
+| **D9** | **Go 1.27** (installed locally: `go1.27.1 darwin/arm64`). | [ADR 0010](docs/adr/0010-go.md) |
 | **D18** | Go interface naming follows Go convention (`Harness`, not `BaseHarness`) — **pending** confirmation in [Architecture boundaries #6](https://github.com/seppaleinen/idle-deck/issues/6). | Issue #1's `Base*` prefix is not idiomatic. |
 
 ### Configuration
