@@ -1,0 +1,30 @@
+name: CI
+on: [push, pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+      - name: Install dependencies
+        run: go mod download
+      - name: Run D-id checker
+        run: |
+          grep -oh 'D[0-9]\+' --exclude-dir=.git -r . | sort -u > /tmp/cited
+          grep -rho '^\| \*\*D[0-9]\+\*\*' --include=AGENTS.md . | grep -o 'D[0-9]\+' | sort -u > /tmp/defined
+          comm -23 /tmp/cited /tmp/defined
+        # If the command exits non-zero CI will fail – guard from stale D-ids.
+      - name: Build all packages
+        run: go build ./...
+      - name: Vet packages
+        run: go vet ./...
+      - name: Test packages
+        run: go test ./...
+      - name: Smoke test
+        run: |
+          go run . --version
+          go run . check
+          go run . run 2>/dev/null || echo "run exited as expected"

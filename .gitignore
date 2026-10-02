@@ -1,0 +1,5 @@
+idle-deck
+*.db
+*.log
+**/idle-deck
+*/idle-deck
