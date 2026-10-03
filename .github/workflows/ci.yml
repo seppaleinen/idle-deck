@@ -16,7 +16,7 @@ jobs:
           grep -oh 'D[0-9]\+' --exclude-dir=.git -r . | sort -u > /tmp/cited
           grep -rho '^\| \*\*D[0-9]\+\*\*' --include=AGENTS.md . | grep -o 'D[0-9]\+' | sort -u > /tmp/defined
           comm -23 /tmp/cited /tmp/defined
-        # If the command exits non-zero CI will fail – guard from stale D-ids.
+          # If the command exits non-zero CI will fail – guard from stale D-ids.
       - name: Build all packages
         run: go build ./...
       - name: Vet packages
@@ -26,5 +26,5 @@ jobs:
       - name: Smoke test
         run: |
           go run . --version
-          go run . check
-          go run . run 2>/dev/null || echo "run exited as expected"
+          go run . check && { echo "FAIL: check should fail without config"; exit 1; } || echo "check refused without config (expected)"
+          go run . run 2>/dev/null || echo "run refused as expected"
