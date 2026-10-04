@@ -52,6 +52,7 @@ type TrackerSource interface {
 type TrackerSink interface {
     Comment(ctx context.Context, ref TrackerRef, body string) error
     SetLabels(ctx context.Context, ref TrackerRef, add, remove []string) error
+    OpenIssue(ctx context.Context, repo string, title string, body string, labels []string) error
 }
 ```
 
@@ -144,18 +145,29 @@ type Harness interface {
 
 ```go
 type RunRequest struct {
-    Role      string // plan | do | sweep, derived from task tier (D6, I11). Never a model name.
-    Prompt    string
-    Budget    int
-    Timeout   time.Duration
-    RepoRef   Repository // identity + allowlisted URL
-    TicketRef TrackerRef
-    AttemptID string
+	Role      string // plan | do | sweep, derived from task tier (D6, I11). Never a model name.
+	Prompt    string
+	Budget    int
+	Timeout   time.Duration
+	RepoRef   Repository // identity + allowlisted URL
+	TicketRef TrackerRef
+	AttemptID string
+	Findings  []Finding   // populated by the sweep agent; forwarded to TrackerSink.OpenIssue
 }
 
 type RunResult struct {
-    Outcome   AttemptOutcome // succeeded | retryable_failure | non_retryable_failure | timeout | preempted
-    Artifacts []Artifact     // pull_request | branch | comment | report | log
+	Outcome   AttemptOutcome // succeeded | retryable_failure | non_retryable_failure | timeout | preempted
+	Artifacts []Artifact     // pull_request | branch | comment | report | log
+}
+
+// Finding is a structured finding from a P3 sweep, describing a code health
+// marker or other concern. The sweep agent collects these; idle-deck files one
+// issue per finding via TrackerSink.OpenIssue.
+type Finding struct {
+	Title       string
+	Description string
+	Category    string   // e.g. "stale-TODO", "coverage-gap", "dependency-drift"
+	Severity    string   // optional: "low" | "medium" | "high"
 }
 ```
 
