@@ -45,6 +45,9 @@ func NewSQLiteQueue(dbPath string, opts ...func(*SQLiteQueue)) *SQLiteQueue {
 		events: make(chan queue.QueueEvent, 1),
 		notify: make(chan struct{}, 1),
 	}
+	for _, opt := range opts {
+		opt(q)
+	}
 	ctx := context.Background()
 	db, err := Open(ctx, dbPath)
 	if err != nil {
@@ -82,8 +85,8 @@ func (q *SQLiteQueue) Enqueue(ctx context.Context, task queue.Task) error {
 	const qInsert = `
 INSERT OR IGNORE INTO tasks (id, repository_id, ticket_tracker, ticket_repo_id,
 	ticket_external_id, ticket_url, tier, prompt, payload, timeout_seconds,
-	budget, state, event_type, dedupe_key, received_at, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)`
+	budget, state, event_type, dedupe_key, received_at, created_at, derived_from)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)`
 	_, err := q.db.ExecContext(ctx, qInsert,
 		task.ID,
 		task.RepositoryID,
@@ -100,6 +103,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)`
 		task.TriggeredBy.DedupeKey,
 		task.TriggeredBy.ReceivedAt,
 		task.CreatedAt,
+		task.DerivedFrom,
 	)
 	if err != nil {
 		return fmt.Errorf("store: enqueue insert: %w", err)
@@ -261,7 +265,7 @@ func (q *SQLiteQueue) Ack(ctx context.Context, lease queue.Lease, attemptID stri
 	res, err := tx.ExecContext(ctx, `
 UPDATE attempts
    SET outcome = 'succeeded', finished_at = ?
-WHERE id = ? AND task_id = ? AND outcome = '',
+WHERE id = ? AND task_id = ? AND outcome = ''
 `,
 		now.Format(time.RFC3339Nano), attemptID, lease.TaskID)
 	if err != nil {
@@ -320,7 +324,7 @@ func (q *SQLiteQueue) Nack(ctx context.Context, lease queue.Lease, attemptID str
 	res, err := tx.ExecContext(ctx, `
 UPDATE attempts
    SET outcome = ?, finished_at = ?
-WHERE id = ? AND task_id = ? AND outcome = '',
+WHERE id = ? AND task_id = ? AND outcome = ''
 `,
 		string(outcome), now.Format(time.RFC3339Nano), attemptID, lease.TaskID)
 	if err != nil {
