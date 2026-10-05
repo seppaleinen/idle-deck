@@ -92,6 +92,9 @@ func (s *TrackerState) UpsertIssue(issue *GitHubIssue) {
 	if issue.Labels == nil {
 		issue.Labels = []GitHubLabel{}
 	}
+	if issue.HTMLURL == "" && s.Repo != "" {
+		issue.HTMLURL = fmt.Sprintf("https://github.com/%s/issues/%d", s.Repo, issue.Number)
+	}
 	s.Issues[issue.Number] = issue
 }
 

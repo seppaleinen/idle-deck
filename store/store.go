@@ -19,7 +19,7 @@ func dsn(path string) string {
 	return path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode=WAL"
 }
 
-const SchemaVersion = 3
+const SchemaVersion = 4
 
 const v1Schema = `
 CREATE TABLE IF NOT EXISTS repositories (
@@ -92,6 +92,14 @@ ALTER TABLE tasks ADD COLUMN derived_from TEXT;
 ALTER TABLE attempts ADD COLUMN artifacts TEXT NOT NULL DEFAULT '';
 `
 
+const v4AddTrackerWatermark = `
+CREATE TABLE IF NOT EXISTS tracker_watermarks (
+    repo       TEXT PRIMARY KEY,
+    watermark  TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+`
+
 type migration struct {
 	version int
 	sql     string
@@ -101,6 +109,7 @@ var migrations = []migration{
 	{version: 1, sql: v1Schema},
 	{version: 2, sql: v2AddTaskTriggerBy},
 	{version: 3, sql: v3AddTaskLineageAndAttemptArtifacts},
+	{version: 4, sql: v4AddTrackerWatermark},
 }
 
 func Open(ctx context.Context, path string) (*sql.DB, error) {

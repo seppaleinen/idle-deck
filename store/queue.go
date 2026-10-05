@@ -426,3 +426,54 @@ DELETE FROM attempts WHERE id = ? AND outcome = '',
 	}
 	return nil
 }
+// WatermarkStore provides per-repository watermark cursor access
+// for the tracker adapter (event-contract §2).
+type WatermarkStore interface {
+	// Load returns the watermark for the given repo.
+	// Returns zero time and false if no watermark has been seeded.
+	Load(ctx context.Context, repo string) (time.Time, bool, error)
+	// Save upserts the watermark for the given repo.
+	// The watermark is advanced to the tick start (event-contract §2).
+	Save(ctx context.Context, repo string, t time.Time) error
+}
+
+// SQLiteWatermarks implements WatermarkStore using the tracker_watermarks table.
+type SQLiteWatermarks struct {
+	db  *sql.DB
+	now func() time.Time
+}
+
+func NewSQLiteWatermarks(db *sql.DB) *SQLiteWatermarks {
+	return &SQLiteWatermarks{db: db, now: time.Now}
+}
+
+func (w *SQLiteWatermarks) Load(ctx context.Context, repo string) (time.Time, bool, error) {
+	var s string
+	err := w.db.QueryRowContext(ctx,
+		`SELECT watermark FROM tracker_watermarks WHERE repo = ?`, repo).Scan(&s)
+	if err == sql.ErrNoRows {
+		return time.Time{}, false, nil
+	}
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("watermark: load: %w", err)
+	}
+	t, err := time.Parse(time.RFC3339Nano, s)
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("watermark: parse: %w", err)
+	}
+	return t, true, nil
+}
+
+func (w *SQLiteWatermarks) Save(ctx context.Context, repo string, t time.Time) error {
+	_, err := w.db.ExecContext(ctx, `
+INSERT INTO tracker_watermarks (repo, watermark, updated_at)
+VALUES (?, ?, ?)
+ON CONFLICT(repo) DO UPDATE SET
+    watermark = excluded.watermark,
+    updated_at = excluded.updated_at`,
+		repo, t.Format(time.RFC3339Nano), w.now().UnixNano())
+	if err != nil {
+		return fmt.Errorf("watermark: save: %w", err)
+	}
+	return nil
+}
