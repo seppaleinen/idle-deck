@@ -17,13 +17,13 @@ import (
 
 // Poller runs the polling loop for a set of repositories (event-contract §2, §8).
 type Poller struct {
-	gh        *GitHub
-	q         queue.Queue
-	wm        store.WatermarkStore
-	repos     []string
-	interval  time.Duration
-	now       func() time.Time
-	client    *http.Client
+	gh       *GitHub
+	q        queue.Queue
+	wm       store.WatermarkStore
+	repos    []string
+	interval time.Duration
+	now      func() time.Time
+	client   *http.Client
 }
 
 // NewPoller creates a poller for the given repositories.

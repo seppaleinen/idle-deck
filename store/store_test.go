@@ -98,14 +98,21 @@ func TestLeaseExpiryRecordsTimeout(t *testing.T) {
 	}
 	_ = lease
 	time.Sleep(150 * time.Millisecond)
-	// After sleep + Dequeue, attempt 1 should be timeout
-	// But we just check it doesn't panic
+	// Trigger reclaim by calling Dequeue again — reclaim happens inside Dequeue
+	// We don't check the returned lease; we just need reclaim to fire.
+	// After the call, attempt 1 should be timeout.
+	_, _ = s.Dequeue(ctx)
+
 	var outcome string
 	err = s.db.QueryRowContext(ctx, "SELECT outcome FROM attempts WHERE task_id = ? AND ordinal = 1", task.ID).Scan(&outcome)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("outcome = %q", outcome)
+	if outcome != "timeout" {
+		t.Errorf("expected outcome = timeout, got %q", outcome)
+	}
+	// The task is re-claimed by the second Dequeue, so state is 'running'.
+	// The important assertion is that attempt 1 outcome is 'timeout'.
 }
 func TestEnqueueIdempotent(t *testing.T) {
 	s := newTestStore(t)

@@ -92,9 +92,9 @@ func P1RunResponse(runID string, commentBody string) *HarnessRun {
 		},
 		Artifacts: []HarnessArtifact{
 			{
-				Kind:  "comment",
-				URI:   "https://github.com/acme/widgets/issues/412#issuecomment-" + uuid.New().String()[:8],
-				Body:  commentBody,
+				Kind: "comment",
+				URI:  "https://github.com/acme/widgets/issues/412#issuecomment-" + uuid.New().String()[:8],
+				Body: commentBody,
 			},
 			{
 				Kind: "log",
@@ -119,13 +119,13 @@ func P2RunResponse(runID string, prNumber int, branchName string) *HarnessRun {
 		},
 		Artifacts: []HarnessArtifact{
 			{
-				Kind:  "pull_request",
-				URI:   "https://github.com/acme/widgets/pull/" + strconv.Itoa(prNumber),
+				Kind: "pull_request",
+				URI:  "https://github.com/acme/widgets/pull/" + strconv.Itoa(prNumber),
 			},
 			{
-				Kind:           "branch",
-				BranchPurpose:  &branchPurpose,
-				URI:            "https://github.com/acme/widgets/tree/" + branchName,
+				Kind:          "branch",
+				BranchPurpose: &branchPurpose,
+				URI:           "https://github.com/acme/widgets/tree/" + branchName,
 			},
 			{
 				Kind: "log",
@@ -151,9 +151,9 @@ func EscalatedRunResponse(runID, debugBranch string) *HarnessRun {
 		},
 		Artifacts: []HarnessArtifact{
 			{
-				Kind:           "branch",
-				BranchPurpose:  &branchPurpose,
-				URI:            "https://github.com/acme/widgets/tree/" + debugBranch,
+				Kind:          "branch",
+				BranchPurpose: &branchPurpose,
+				URI:           "https://github.com/acme/widgets/tree/" + debugBranch,
 			},
 			{
 				Kind: "log",

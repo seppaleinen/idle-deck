@@ -172,6 +172,8 @@ Recorded because six tickets' worth of silence from the first check read as appr
 | [0017](0017-the-artifact.md) | One static cgo-free binary, main package at the repo root, installed with `go install` | accepted (from D32) |
 | [0018](0018-framework-agnostic-means-never-naming-a-vendor.md) | "Framework-agnostic" means never naming a model, provider, or vendor; the seam is proved by a conformance suite, not a second adapter | accepted (from D40, D41) |
 | [0019](0019-p3-sweep-policy.md) | A P3 sweep files one issue per finding, never a PR, and never re-enters its own write | accepted (from D43, D44, D45) |
+| [0020](0020-sweep-findings-typed.md) | P3 sweep findings are typed and forwarded to TrackerSink.OpenIssue | accepted (from D43) |
+| [0021](0021-worker-composition-root.md) | The worker is the composition root: a concrete struct with constructor + Run(ctx), owning the pipeline (idle gate, retry/escalation, preemption, backoff) | accepted (from D8, D14) |
 
 ## Supersessions, and what they cost
 

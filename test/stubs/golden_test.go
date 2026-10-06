@@ -269,14 +269,15 @@ func trackerRef(repo string, num int) queue.TrackerRef {
 }
 
 // buildPrompt derives the task prompt per event-contract §7:
-//   repo:   owner/repo
-//   issue:  #123
-//   url:    https://github.com/owner/repo/issues/123
-//   tier:   P2  (role: do)
 //
-//   <issue title>
+//	repo:   owner/repo
+//	issue:  #123
+//	url:    https://github.com/owner/repo/issues/123
+//	tier:   P2  (role: do)
 //
-//   <issue body>
+//	<issue title>
+//
+//	<issue body>
 func buildPrompt(role queue.TaskRole, repo string, issue GitHubIssue) string {
 	var sb strings.Builder
 	sb.WriteString("repo:   ")

@@ -22,14 +22,14 @@ func newID() string {
 }
 
 type SQLiteQueue struct {
-	db     *sql.DB
-	now    nowFunc
-	lease  time.Duration
-	maxA   int
-	mu     sync.Mutex
-	active *activeLease
-	events chan queue.QueueEvent
-	notify chan struct{}
+	db      *sql.DB
+	now     nowFunc
+	lease   time.Duration
+	maxA    int
+	mu      sync.Mutex
+	active  *activeLease
+	events  chan queue.QueueEvent
+	notify  chan struct{}
 	notifyM sync.Mutex
 }
 
@@ -59,7 +59,9 @@ func NewSQLiteQueue(dbPath string, opts ...func(*SQLiteQueue)) *SQLiteQueue {
 }
 
 func WithNow(f func() time.Time) func(*SQLiteQueue) { return func(q *SQLiteQueue) { q.now = f } }
-func WithLeaseDuration(d time.Duration) func(*SQLiteQueue) { return func(q *SQLiteQueue) { q.lease = d } }
+func WithLeaseDuration(d time.Duration) func(*SQLiteQueue) {
+	return func(q *SQLiteQueue) { q.lease = d }
+}
 func WithMaxAttempts(n int) func(*SQLiteQueue) { return func(q *SQLiteQueue) { q.maxA = n } }
 
 func (q *SQLiteQueue) Enqueue(ctx context.Context, task queue.Task) error {
@@ -75,11 +77,16 @@ func (q *SQLiteQueue) Enqueue(ctx context.Context, task queue.Task) error {
 	}
 	tierRank := func(t queue.TaskTier) int {
 		switch t {
-		case queue.TierP0: return 0
-		case queue.TierP1: return 1
-		case queue.TierP2: return 2
-		case queue.TierP3: return 3
-		default: return 99
+		case queue.TierP0:
+			return 0
+		case queue.TierP1:
+			return 1
+		case queue.TierP2:
+			return 2
+		case queue.TierP3:
+			return 3
+		default:
+			return 99
 		}
 	}
 	const qInsert = `
@@ -387,6 +394,102 @@ func (q *SQLiteQueue) Events(ctx context.Context) (<-chan queue.QueueEvent, erro
 	return q.events, nil
 }
 
+// DB returns the underlying *sql.DB handle. It is used by main.go to construct
+// the watermark store and to run read-only status queries. The queue retains
+// ownership of the handle: callers must not close it.
+func (q *SQLiteQueue) DB() *sql.DB {
+	return q.db
+}
+
+// GetTask returns the full Task for the given id. The worker fetches task
+// details (prompt, budget, ticket, tier) after dequeuing, because Dequeue
+// returns only a Lease.
+func (q *SQLiteQueue) GetTask(ctx context.Context, taskID string) (queue.Task, error) {
+	var t queue.Task
+	var ticketTracker, ticketRepoID, ticketExternalID, ticketURL string
+	var triggeredEventType, triggeredDedupeKey string
+	var triggeredReceivedAt int64
+	var derivedFrom sql.NullString
+	err := q.db.QueryRowContext(ctx, `
+SELECT id, repository_id, ticket_tracker, ticket_repo_id,
+       ticket_external_id, ticket_url, tier, prompt, payload,
+       timeout_seconds, budget, state,
+       triggered_by_event_type, triggered_by_dedupe_key,
+       triggered_by_received_at, created_at, derived_from
+  FROM tasks WHERE id = ?`, taskID).Scan(
+		&t.ID, &t.RepositoryID, &ticketTracker, &ticketRepoID,
+		&ticketExternalID, &ticketURL, &t.Tier, &t.Prompt, &t.Payload,
+		&t.TimeoutSeconds, &t.Budget, &t.State,
+		&triggeredEventType, &triggeredDedupeKey,
+		&triggeredReceivedAt, &t.CreatedAt, &derivedFrom,
+	)
+	if err == sql.ErrNoRows {
+		return queue.Task{}, queue.ErrNotFound
+	}
+	if err != nil {
+		return queue.Task{}, fmt.Errorf("store: get task: %w", err)
+	}
+	t.Ticket = queue.TrackerRef{
+		Tracker:      ticketTracker,
+		RepositoryID: ticketRepoID,
+		ExternalID:   ticketExternalID,
+		URL:          ticketURL,
+	}
+	t.TriggeredBy = queue.TriggeredBy{
+		EventType:  triggeredEventType,
+		DedupeKey:  triggeredDedupeKey,
+		ReceivedAt: triggeredReceivedAt,
+	}
+	if derivedFrom.Valid {
+		t.DerivedFrom = derivedFrom.String
+	}
+	return t, nil
+}
+
+// SaveArtifacts persists harness-returned artifacts for an attempt. It is
+// idempotent: re-saving the same attempt's artifacts is a no-op (the worker
+// may call it on both the success and the escalation paths).
+func (q *SQLiteQueue) SaveArtifacts(ctx context.Context, attemptID string, artifacts []queue.Artifact) error {
+	tx, err := q.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := q.now()
+	for _, a := range artifacts {
+		if a.ID == "" {
+			a.ID = newID()
+		}
+		if a.ProducedAt == 0 {
+			a.ProducedAt = now.UnixNano()
+		}
+		var bp sql.NullString
+		if a.BranchPurpose != "" {
+			bp.String = string(a.BranchPurpose)
+			bp.Valid = true
+		}
+		_, err := tx.ExecContext(ctx, `
+INSERT INTO artifacts (id, attempt_id, kind, branch_purpose, uri, produced_at)
+VALUES (?, ?, ?, ?, ?, ?)`,
+			a.ID, attemptID, string(a.Kind), bp, a.URI, a.ProducedAt)
+		if err != nil {
+			tx.Rollback()
+			return fmt.Errorf("store: save artifact: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
+// AttemptCount returns the number of attempts with a non-empty outcome for a task.
+func (q *SQLiteQueue) AttemptCount(ctx context.Context, taskID string) (int, error) {
+	var count int
+	err := q.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM attempts WHERE task_id = ? AND outcome != ''`, taskID).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("store: attempt count: %w", err)
+	}
+	return count, nil
+}
+
 func (q *SQLiteQueue) Release(ctx context.Context, lease queue.Lease) error {
 	tx, err := q.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -426,6 +529,7 @@ DELETE FROM attempts WHERE id = ? AND outcome = '',
 	}
 	return nil
 }
+
 // WatermarkStore provides per-repository watermark cursor access
 // for the tracker adapter (event-contract §2).
 type WatermarkStore interface {

@@ -61,9 +61,9 @@ const (
 type TaskRole string
 
 const (
-	RolePlan   TaskRole = "plan"
-	RoleDo     TaskRole = "do"
-	RoleSweep  TaskRole = "sweep"
+	RolePlan  TaskRole = "plan"
+	RoleDo    TaskRole = "do"
+	RoleSweep TaskRole = "sweep"
 )
 
 // RoleForTier maps a TaskTier to its TaskRole (I11, ontology table).
@@ -117,15 +117,15 @@ type Task struct {
 // TaskAttempt is one execution of a Task (ontology).
 // Retry count is len(attempts) — there is no retry-count column.
 type TaskAttempt struct {
-	ID               string
-	TaskID           string
-	Ordinal          int
-	Outcome          AttemptOutcome
-	StartedAt        int64
-	FinishedAt       int64
-	TimeoutSeconds   int
-	RemoteSessionID  string
-	Artifacts        []Artifact
+	ID              string
+	TaskID          string
+	Ordinal         int
+	Outcome         AttemptOutcome
+	StartedAt       int64
+	FinishedAt      int64
+	TimeoutSeconds  int
+	RemoteSessionID string
+	Artifacts       []Artifact
 }
 
 // Artifact is something an attempt produced that outlives it (ontology).
@@ -186,4 +186,10 @@ type Queue interface {
 	// Release returns the lease without recording an outcome (only valid before the
 	// attempt is started).
 	Release(ctx context.Context, lease Lease) error
+	// GetTask returns the full Task for the given id. The worker fetches task
+	// details (prompt, budget, ticket, tier) after dequeuing, because Dequeue
+	// returns only a Lease.
+	GetTask(ctx context.Context, taskID string) (Task, error)
+	// SaveArtifacts persists harness-returned artifacts for an attempt.
+	SaveArtifacts(ctx context.Context, attemptID string, artifacts []Artifact) error
 }

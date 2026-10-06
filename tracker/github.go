@@ -144,9 +144,9 @@ func (g *GitHub) Parse(ctx context.Context, raw []byte) (queue.Task, error) {
 			ExternalID:   fmt.Sprintf("%d", issue.Number),
 			URL:          issue.HTMLURL,
 		},
-		Tier:    tier,
-		Prompt:  BuildPrompt(repo, issue.Number, issue.HTMLURL, tier, issue.Title, issue.Body),
-		State:   queue.StateQueued,
+		Tier:   tier,
+		Prompt: BuildPrompt(repo, issue.Number, issue.HTMLURL, tier, issue.Title, issue.Body),
+		State:  queue.StateQueued,
 		TriggeredBy: queue.TriggeredBy{
 			EventType:  eventType,
 			DedupeKey:  dedupeKey,

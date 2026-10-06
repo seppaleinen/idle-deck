@@ -70,12 +70,12 @@ const (
 // fieldMeta describes one configuration field: its name, env var, kind, default,
 // whether it's a secret, and its CLI flag name (empty for secrets).
 type fieldMeta struct {
-    name     string
-    key   string
-    kind     fieldKind
-    default_ string
-    secret   bool
-    flag     string
+	name     string
+	key      string
+	kind     fieldKind
+	default_ string
+	secret   bool
+	flag     string
 }
 
 // fields is the single source of truth for all configuration fields.
@@ -119,25 +119,25 @@ type Config struct {
 	HarnessURL   string
 	HarnessToken string
 
-	DB                   string
-	PollInterval         time.Duration
-	MaxConcurrent        int
-	LogLevel             string
-	LogFormat            string
-	TierTimeoutPlan      time.Duration
-	TierTimeoutDo        time.Duration
-	TierTimeoutSweep     time.Duration
-	TierTimeoutHotfix    time.Duration
-	BudgetPlan           int
-	BudgetDo             int
-	BudgetSweep          int
-	BudgetHotfix         int
-	GitHubAPI            string
-	RetryBackoffInitial  time.Duration
-	RetryBackoffMax      time.Duration
-	SweepPeriod          time.Duration
-	SweepRepos           string
-	SweepPrompt          string
+	DB                  string
+	PollInterval        time.Duration
+	MaxConcurrent       int
+	LogLevel            string
+	LogFormat           string
+	TierTimeoutPlan     time.Duration
+	TierTimeoutDo       time.Duration
+	TierTimeoutSweep    time.Duration
+	TierTimeoutHotfix   time.Duration
+	BudgetPlan          int
+	BudgetDo            int
+	BudgetSweep         int
+	BudgetHotfix        int
+	GitHubAPI           string
+	RetryBackoffInitial time.Duration
+	RetryBackoffMax     time.Duration
+	SweepPeriod         time.Duration
+	SweepRepos          string
+	SweepPrompt         string
 }
 
 // MissingVarError names the required variables that are absent or empty.
@@ -153,9 +153,9 @@ func (e *MissingVarError) Error() string {
 // ParseError reports a single environment variable whose value could not be parsed.
 // It names the variable and the expected type (e.g. "duration", "int").
 type ParseError struct {
-	Var    string
-	Kind   string
-	Cause  error
+	Var   string
+	Kind  string
+	Cause error
 }
 
 func (e *ParseError) Error() string {
@@ -418,32 +418,45 @@ func Format(c Config) string {
 		case kindDurationSeconds:
 			s = strconv.FormatInt(v.Int()/int64(time.Second), 10)
 		}
-        fmt.Fprintf(&b, "%s=%s\n", f.key, s)
-    }
-    return b.String()
+		fmt.Fprintf(&b, "%s=%s\n", f.key, s)
+	}
+	return b.String()
 }
 
 // String returns Format(c).
 func (c Config) String() string {
-    return Format(c)
+	return Format(c)
+}
+
+// ParseRepos parses a comma-separated list of owner/repo strings.
+// It is an exported wrapper around the unexported parseRepos, so callers
+// outside the config package can reuse the validation logic (D34).
+func ParseRepos(raw string) ([]string, error) {
+	return parseRepos(raw)
+}
+
+// ExpandHome expands a leading ~ in a path to the user's home directory.
+// It is an exported wrapper around the unexported expandHome.
+func ExpandHome(p string) string {
+	return expandHome(p)
 }
 
 // CheckDB verifies that the SQLite database path is writable.
 // It creates the parent directory if needed and attempts a temp-file probe.
 // The schema-current check is deferred to storage slice #10 (no schema exists yet).
 func CheckDB(path string) error {
-    dir := filepath.Dir(expandHome(path))
-    if err := os.MkdirAll(dir, 0o755); err != nil {
-        return fmt.Errorf("cannot create directory %q: %w", dir, err)
-    }
-    f, err := os.CreateTemp(dir, ".idle-deck-write-test-*")
-    if err != nil {
-        return fmt.Errorf("directory %q is not writable: %w", dir, err)
-    }
-    f.Close()
-    os.Remove(f.Name())
-    // Schema-current check is deferred to storage slice #10; no schema exists yet.
-    fmt.Printf("schema: pending (storage slice #10 – no schema exists yet)\n")
-    fmt.Printf("SQLite: path %q writable\n", path)
-    return nil
+	dir := filepath.Dir(expandHome(path))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("cannot create directory %q: %w", dir, err)
+	}
+	f, err := os.CreateTemp(dir, ".idle-deck-write-test-*")
+	if err != nil {
+		return fmt.Errorf("directory %q is not writable: %w", dir, err)
+	}
+	f.Close()
+	os.Remove(f.Name())
+	// Schema-current check is deferred to storage slice #10; no schema exists yet.
+	fmt.Printf("schema: pending (storage slice #10 – no schema exists yet)\n")
+	fmt.Printf("SQLite: path %q writable\n", path)
+	return nil
 }

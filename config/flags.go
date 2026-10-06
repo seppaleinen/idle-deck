@@ -1,8 +1,8 @@
 package config
 
 import (
-	"reflect"
 	"flag"
+	"reflect"
 )
 
 // FlagOverrides holds the parsed CLI flags.
@@ -11,27 +11,27 @@ import (
 type FlagOverrides struct {
 	fs *flag.FlagSet
 
-	DB               *string
-	Repos            *string
-	GitHubAPI        *string
-	HarnessURL       *string
-	PollInterval     *string
-	MaxConcurrent    *string
-	LogLevel         *string
-	LogFormat        *string
-	TierTimeoutPlan  *string
-	TierTimeoutDo    *string
-	TierTimeoutSweep *string
-	TierTimeoutHotfix *string
-	BudgetPlan       *string
-	BudgetDo         *string
-	BudgetSweep      *string
-	BudgetHotfix     *string
+	DB                  *string
+	Repos               *string
+	GitHubAPI           *string
+	HarnessURL          *string
+	PollInterval        *string
+	MaxConcurrent       *string
+	LogLevel            *string
+	LogFormat           *string
+	TierTimeoutPlan     *string
+	TierTimeoutDo       *string
+	TierTimeoutSweep    *string
+	TierTimeoutHotfix   *string
+	BudgetPlan          *string
+	BudgetDo            *string
+	BudgetSweep         *string
+	BudgetHotfix        *string
 	RetryBackoffInitial *string
-	RetryBackoffMax    *string
-	SweepPeriod      *string
-	SweepRepos       *string
-	SweepPrompt      *string
+	RetryBackoffMax     *string
+	SweepPeriod         *string
+	SweepRepos          *string
+	SweepPrompt         *string
 }
 
 // RegisterFlags registers all non-secret CLI flags on fs with zero defaults

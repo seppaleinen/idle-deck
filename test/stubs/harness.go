@@ -14,22 +14,22 @@ import (
 
 // HarnessRun represents a run in the harness stub.
 type HarnessRun struct {
-	ID              string
-	AttemptID       string
-	Role            string
-	Prompt          string
-	Budget          int
-	TimeoutSeconds  int
-	Repository      RepositoryInfo
-	Ticket          *TicketInfo
-	Status          string        // "running" or "terminal"
-	StartedAt       time.Time
-	LastActivityAt  time.Time
-	Outcome         *HarnessOutcome
-	Artifacts       []HarnessArtifact
-	Logs            []string
-	LogOffset       int
-	Cancelled       bool
+	ID             string
+	AttemptID      string
+	Role           string
+	Prompt         string
+	Budget         int
+	TimeoutSeconds int
+	Repository     RepositoryInfo
+	Ticket         *TicketInfo
+	Status         string // "running" or "terminal"
+	StartedAt      time.Time
+	LastActivityAt time.Time
+	Outcome        *HarnessOutcome
+	Artifacts      []HarnessArtifact
+	Logs           []string
+	LogOffset      int
+	Cancelled      bool
 }
 
 // RepositoryInfo represents repository information in a run request.
@@ -42,24 +42,24 @@ type RepositoryInfo struct {
 
 // TicketInfo represents ticket information in a run request.
 type TicketInfo struct {
-	Tracker      string `json:"tracker"`
-	ExternalID   string `json:"external_id"`
-	URL          string `json:"url"`
+	Tracker    string `json:"tracker"`
+	ExternalID string `json:"external_id"`
+	URL        string `json:"url"`
 }
 
 // HarnessOutcome represents the outcome of a terminal run.
 type HarnessOutcome struct {
-	State   string  `json:"state"`   // completed, failed, timed_out, cancelled
-	Code    *string `json:"code"`    // failure code when state = failed
+	State   string  `json:"state"` // completed, failed, timed_out, cancelled
+	Code    *string `json:"code"`  // failure code when state = failed
 	Message string  `json:"message"`
 }
 
 // HarnessArtifact represents an artifact produced by a run.
 type HarnessArtifact struct {
-	Kind           string  `json:"kind"`           // comment, pull_request, branch, report, log
-	BranchPurpose  *string `json:"branch_purpose"` // feature, debug (only for kind=branch)
-	URI            string  `json:"uri"`
-	Body           string  `json:"body,omitempty"` // only for kind=comment
+	Kind          string  `json:"kind"`           // comment, pull_request, branch, report, log
+	BranchPurpose *string `json:"branch_purpose"` // feature, debug (only for kind=branch)
+	URI           string  `json:"uri"`
+	Body          string  `json:"body,omitempty"` // only for kind=comment
 }
 
 // HealthResponse represents the /health endpoint response.
@@ -236,13 +236,13 @@ func (s *HarnessServer) handleRuns(w http.ResponseWriter, r *http.Request) {
 
 func (s *HarnessServer) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		AttemptID      string        `json:"attempt_id"`
-		Role           string        `json:"role"`
-		Prompt         string        `json:"prompt"`
-		Budget         int           `json:"budget"`
-		TimeoutSeconds int           `json:"timeout_seconds"`
+		AttemptID      string         `json:"attempt_id"`
+		Role           string         `json:"role"`
+		Prompt         string         `json:"prompt"`
+		Budget         int            `json:"budget"`
+		TimeoutSeconds int            `json:"timeout_seconds"`
 		Repository     RepositoryInfo `json:"repository"`
-		Ticket         *TicketInfo   `json:"ticket"`
+		Ticket         *TicketInfo    `json:"ticket"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -328,10 +328,10 @@ func (s *HarnessServer) handleGetRun(w http.ResponseWriter, r *http.Request, run
 		}
 
 		json.NewEncoder(w).Encode(map[string]any{
-			"status":            "running",
-			"last_activity_at":  run.LastActivityAt.Format(time.RFC3339Nano),
-			"next_log_offset":   nextOffset,
-			"logs":              logs,
+			"status":           "running",
+			"last_activity_at": run.LastActivityAt.Format(time.RFC3339Nano),
+			"next_log_offset":  nextOffset,
+			"logs":             logs,
 		})
 	} else {
 		// Terminal
