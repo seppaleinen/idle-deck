@@ -26,7 +26,7 @@ import (
 	"log/slog"
 )
 
-const version = "0.0.0-dev"
+const version = "v0.1.0"
 
 func main() {
 	if len(os.Args) < 2 {
