@@ -121,6 +121,11 @@ Four mechanical details, each of which bites:
 **No plist generator subcommand.** It would be a second surface to keep in sync with §4, in exchange
 for a one-time copy-paste. Document the plist; let `launchctl` do its job.
 
+The canonical copy of the plist above lives at
+[`docs/ops/launchd/com.seppaleinen.idle-deck.plist`](../ops/launchd/com.seppaleinen.idle-deck.plist),
+with the install/uninstall commands and the four mechanical details spelled out in
+[`docs/ops/launchd/README.md`](../ops/launchd/README.md).
+
 ## 4. Configuration
 
 **Environment variables and CLI flags only. No YAML file in the MVP.**

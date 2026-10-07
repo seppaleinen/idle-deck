@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  idle-deck LaunchAgent (D35).
+
+  Copy this file to ~/Library/LaunchAgents/com.seppaleinen.idle-deck.plist,
+  adjust the two absolute paths marked below, chmod 600, create the log
+  directory, then:
+
+      launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.seppaleinen.idle-deck.plist
+
+  To stop:
+
+      launchctl bootout gui/$(id -u)/com.seppaleinen.idle-deck
+
+  Four mechanical details, each of which bites:
+
+  1. launchd does NOT expand ~. Every path in this file is absolute.
+  2. The log directory must exist or the job refuses to start.
+  3. KeepAlive is SuccessfulExit: false, not true. Plain true would respawn
+     the daemon even after a deliberate clean stop — this is the
+     "restart on crash, respect the exit" form.
+  4. ThrottleInterval prevents a crash loop from becoming a spin.
+
+  Secrets: the two tokens live in EnvironmentVariables. The plist itself is
+  chmod 600 and is read by launchd, never by idle-deck (D36).
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <!--
+    Must match the filename (minus .plist). Keep the reverse-DNS form:
+    it is the process's launchd label and the key launchctl bootout uses.
+  -->
+  <string>com.seppaleinen.idle-deck</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <!--
+      Absolute path to the idle-deck binary (D32: installed via
+      `go install`). launchd does not expand ~.
+    -->
+    <string>/Users/yourname/go/bin/idle-deck</string>
+    <string>run</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <!-- Starts at login, not at boot. -->
+
+  <key>KeepAlive</key>
+  <dict>
+    <!--
+      SuccessfulExit: false — restart on crash, respect the exit.
+      A plain <true/> here would respawn the daemon even after a deliberate
+      clean stop (Ctrl-C / SIGTERM), which is not what a LaunchAgent is for.
+    -->
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+
+  <key>ThrottleInterval</key>
+  <!--
+    Minimum seconds between respawns. Without this, a crashing daemon
+    would spin launchd into a tight loop; with it, a crash costs one
+    retry per 10s instead of unbounded CPU.
+  -->
+  <integer>10</integer>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!--
+      Tokens are the environment and nothing else (D36). The plist is
+      chmod 600; launchd reads it, idle-deck never does. Rotate-and-restart:
+      edit this file, then `launchctl bootout` + `launchctl bootstrap`.
+    -->
+    <key>IDLE_DECK_GITHUB_TOKEN</key>
+    <string>github_pat_your_pat_here</string>
+    <key>IDLE_DECK_HARNESS_TOKEN</key>
+    <string>your_harness_bearer_token_here</string>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <!--
+    launchd does not create this directory. mkdir -p it first.
+    Structured JSON (the default log format) lands here on stderr; stdout
+    is empty because idle-deck logs to stderr only.
+  -->
+  <string>/Users/yourname/Library/Logs/idle-deck/stdout.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/yourname/Library/Logs/idle-deck/stderr.log</string>
+</dict>
+</plist>

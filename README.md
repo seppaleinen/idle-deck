@@ -92,6 +92,20 @@ idle-deck **never merges**. It opens a Draft PR and stops. Autonomy is earned by
 **There is nothing to install yet.** This section is a statement of intent, and it will be rewritten
 once the backlog in [MVP backlog](https://github.com/seppaleinen/idle-deck/issues/10) has been worked.
 
+### Supervision
+
+idle-deck runs as a per-user `launchd` LaunchAgent — starts at login, no root,
+restarts on crash without restarting on a deliberate clean stop
+([D35](https://github.com/seppaleinen/idle-deck/blob/main/AGENTS.md)). The plist
+is a plain text file in the repo, not a generated subcommand:
+
+- **Plist:** [`docs/ops/launchd/com.seppaleinen.idle-deck.plist`](docs/ops/launchd/com.seppaleinen.idle-deck.plist)
+- **Guide:** [`docs/ops/launchd/README.md`](docs/ops/launchd/README.md)
+- **Install:** copy the plist to `~/Library/LaunchAgents/`, `chmod 600`, `mkdir -p ~/Library/Logs/idle-deck`,
+  then `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.seppaleinen.idle-deck.plist`.
+- **Stop:** `launchctl bootout gui/$(id -u)/com.seppaleinen.idle-deck`. There is no `idle-deck stop`
+  command — `launchctl bootout` is the stop, and it is the only one.
+
 The intended shape, when it exists:
 
 - **Install a single Go binary.** `go install github.com/seppaleinen/idle-deck@latest`. Static, no
