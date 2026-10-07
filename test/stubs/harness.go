@@ -60,6 +60,15 @@ type HarnessArtifact struct {
 	BranchPurpose *string `json:"branch_purpose"` // feature, debug (only for kind=branch)
 	URI           string  `json:"uri"`
 	Body          string  `json:"body,omitempty"` // only for kind=comment
+	Findings      []HarnessFinding `json:"findings,omitempty"` // for kind=report
+}
+
+// HarnessFinding represents a structured finding in a sweep report artifact.
+type HarnessFinding struct {
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	Category    string `json:"category"`
+	Severity    string `json:"severity,omitempty"`
 }
 
 // HealthResponse represents the /health endpoint response.

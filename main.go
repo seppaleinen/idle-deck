@@ -215,6 +215,13 @@ func runRun(args []string) int {
 		return 1
 	}
 
+	// Parse sweep repos (narrowing subset of the allowlist; empty = all).
+	sweepRepos, err := config.ParseRepos(cfg.SweepRepos)
+	if err != nil {
+		log.Error("parse sweep repos", "err", err)
+		return 1
+	}
+
 	// Create SQLite queue with maxAttempts=3 (D14: 2 retries + 1 initial).
 	dbPath := config.ExpandHome(cfg.DB)
 	q := store.NewSQLiteQueue(dbPath, store.WithMaxAttempts(3))
@@ -251,7 +258,12 @@ func runRun(args []string) int {
 		return 1
 	}
 
-	poller := tracker.NewPoller(trk, q, wm, repos, cfg.PollInterval)
+	poller := tracker.NewPoller(trk, q, wm, repos, cfg.PollInterval,
+		tracker.WithSweep(tracker.SweepConfig{
+			Period: cfg.SweepPeriod,
+			Repos:  sweepRepos,
+			Prompt: cfg.SweepPrompt,
+		}))
 	go func() {
 		ticker := time.NewTicker(cfg.PollInterval)
 		defer ticker.Stop()
@@ -269,6 +281,10 @@ func runRun(args []string) int {
 				_ = hb.Beat(ctx, time.Now())
 				for _, repo := range repos {
 					_ = hb.SavePoll(ctx, repo, time.Now())
+				}
+				// P3 sweep: enqueue sweep tasks for the configured sweep repos.
+				if err := poller.Sweep(ctx); err != nil {
+					log.Error("sweep enqueue failed", "err", err)
 				}
 			}
 		}

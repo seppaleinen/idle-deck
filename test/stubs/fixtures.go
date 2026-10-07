@@ -206,6 +206,23 @@ func PreemptedRunResponse(runID string) *HarnessRun {
 	}
 }
 
+// SweepReportArtifact creates a report HarnessArtifact with structured findings.
+func SweepReportArtifact(reportURI string, findings []HarnessFinding) HarnessArtifact {
+	return HarnessArtifact{
+		Kind:     "report",
+		URI:      reportURI,
+		Findings: findings,
+	}
+}
+
+// SweepRunResponseWithFindings creates a terminal run response for a P3 sweep
+// run with a report artifact carrying structured findings.
+func SweepRunResponseWithFindings(runID, reportURI string, findings []HarnessFinding) *HarnessRun {
+	run := SweepRunResponse(runID, reportURI)
+	run.Artifacts[0] = SweepReportArtifact(reportURI, findings)
+	return run
+}
+
 // SweepRunResponse creates a terminal run response for a P3 sweep run with report artifact.
 func SweepRunResponse(runID, reportURI string) *HarnessRun {
 	now := time.Now().UTC()

@@ -26,11 +26,13 @@ type RunResult struct {
 
 // Artifact is a typed artifact produced by a remote run.
 // Kind discriminates the type; BranchPurpose is only meaningful when Kind=branch.
+// Findings is populated for kind=report artifacts (P3 sweep structured findings).
 type Artifact struct {
-	Kind          string  `json:"kind"`           // comment | pull_request | branch | report | log
-	BranchPurpose *string `json:"branch_purpose"` // feature | debug (only for kind=branch)
-	URI           string  `json:"uri"`
-	Body          string  `json:"body,omitempty"` // only for kind=comment
+	Kind          string     `json:"kind"`            // comment | pull_request | branch | report | log
+	BranchPurpose *string    `json:"branch_purpose"`  // feature | debug (only for kind=branch)
+	URI           string     `json:"uri"`
+	Body          string     `json:"body,omitempty"`  // only for kind=comment
+	Findings      []Finding  `json:"findings,omitempty"` // for kind=report
 }
 
 // Finding is a structured finding from a P3 sweep, describing a code health

@@ -32,11 +32,12 @@ type queueAttempt struct {
 
 func newStubQueue(t *testing.T) *stubQueue {
 	return &stubQueue{
-		t:        t,
-		tasks:    make(map[string]queue.Task),
-		attempts: make(map[string][]queueAttempt),
-		leases:   make(map[string]queue.Lease),
-		events:   make(chan queue.QueueEvent, 10),
+		t:           t,
+		tasks:       make(map[string]queue.Task),
+		attempts:    make(map[string][]queueAttempt),
+		leases:     make(map[string]queue.Lease),
+		events:     make(chan queue.QueueEvent, 10),
+		maxAttempts: 3, // mirrors store.NewSQLiteQueue(dbPath, store.WithMaxAttempts(3))
 	}
 }
 
@@ -167,9 +168,17 @@ func (q *stubQueue) Nack(ctx context.Context, lease queue.Lease, attemptID strin
 			break
 		}
 	}
-	// Retry policy: 2 retries max
+	// Retry policy mirrors SQLiteQueue.Nack: retryable outcomes (retryable_failure,
+	// timeout, preempted) re-queue while the attempt count is under maxAttempts;
+	// every other outcome — succeeded, non-retryable_failure — is terminal
+	// (escalated). This is outcome-aware, unlike the naive "2 retries then
+	// escalate" form, because a non-retryable protocol violation must drop the
+	// task on the first attempt.
+	retryable := outcome == queue.OutcomeRetryableFailure ||
+		outcome == queue.OutcomeTimeout ||
+		outcome == queue.OutcomePreempted
 	attemptCount := len(q.attempts[lease.TaskID])
-	if attemptCount <= 2 {
+	if retryable && attemptCount < q.maxAttempts {
 		task.State = queue.StateQueued
 	} else {
 		task.State = queue.StateEscalated
@@ -372,15 +381,21 @@ func (h *stubHarness) Result(ctx context.Context, id harness.RunID) (harness.Run
 }
 
 type stubSink struct {
-	t        *testing.T
-	mu       sync.Mutex
-	comments []struct {
+	t         *testing.T
+	mu        sync.Mutex
+	comments  []struct {
 		ref  queue.TrackerRef
 		body string
 	}
-	labels []struct {
+	labels     []struct {
 		ref         queue.TrackerRef
 		add, remove []string
+	}
+	openIssues []struct {
+		repo   string
+		title  string
+		body   string
+		labels []string
 	}
 }
 
@@ -407,6 +422,14 @@ func (s *stubSink) SetLabels(ctx context.Context, ref queue.TrackerRef, add, rem
 }
 
 func (s *stubSink) OpenIssue(ctx context.Context, repo string, title string, body string, labels []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.openIssues = append(s.openIssues, struct {
+		repo   string
+		title  string
+		body   string
+		labels []string
+	}{repo, title, body, labels})
 	return nil
 }
 
@@ -1042,10 +1065,327 @@ func TestBackoffApplied(t *testing.T) {
 	}
 }
 
+// =====================================================================
+// P3 sweep worker tests
+// =====================================================================
+
+// makeSweepTask creates a P3 sweep task (D44 — ticket is zero-value for P3).
+func makeSweepTask(id string) queue.Task {
+	return queue.Task{
+		ID:           id,
+		RepositoryID: "repo",
+		Ticket:       queue.TrackerRef{}, // zero value for P3 (D44)
+		Tier:         queue.TierP3,
+		Prompt:       "sweep prompt",
+		State:        queue.StateQueued,
+		Budget:       20000,
+		TimeoutSeconds: 3600,
+		TriggeredBy: queue.TriggeredBy{
+			EventType:  "schedule.sweep",
+			DedupeKey:  "github:sweep:repo:1234567890",
+			ReceivedAt: time.Now().UnixNano(),
+		},
+		CreatedAt: time.Now().UnixNano(),
+	}
+}
+
+func TestSweepSucceedsWithReportFindings(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	q := newStubQueue(t)
+	h := newStubHarness(t)
+	sink := newStubSink(t)
+	policy := newStubPolicy(true, nil)
+
+	log := slog.New(slog.DiscardHandler)
+	w := NewWorker(q, h, sink, policy, 1, 30*time.Second, 10*time.Minute, log)
+
+	task := makeSweepTask("t-sweep")
+	if err := q.Enqueue(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		_ = w.Run(ctx)
+		close(done)
+	}()
+
+	// Wait for the task to be dequeued and started.
+	time.Sleep(100 * time.Millisecond)
+
+	// Get the attempt ID.
+	q.mu.Lock()
+	atts := q.attempts["t-sweep"]
+	q.mu.Unlock()
+	if len(atts) == 0 {
+		t.Fatal("task was never dequeued")
+	}
+	attemptID := atts[len(atts)-1].ID
+
+	// Harness returns a report artifact with two findings.
+	findings := []harness.Finding{
+		{Title: "Stale TODO in main.go", Description: "TODO added 100 days ago", Category: "stale-TODO", Severity: "medium"},
+		{Title: "Stale FIXME in old.go", Description: "FIXME added 200 days ago", Category: "stale-FIXME", Severity: "high"},
+	}
+	h.SetOutcome("run-"+attemptID, harness.OutcomeSucceeded, []harness.Artifact{
+		{Kind: "report", URI: "artifact-store/run-sweep/report", Findings: findings},
+		{Kind: "log", URI: "artifact-store/run-sweep/run.log"},
+	})
+
+	// Wait for the worker to process the result.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		taskResult, _ := q.GetTask(ctx, "t-sweep")
+		if taskResult.State == queue.StateSucceeded {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	taskResult, _ := q.GetTask(ctx, "t-sweep")
+	if taskResult.State != queue.StateSucceeded {
+		t.Errorf("expected succeeded, got %s", taskResult.State)
+	}
+
+	// W1: OpenIssue must be called once per finding, each labelled idle-needs-human.
+	calls := sink.OpenIssueCalls()
+	if len(calls) != 2 {
+		t.Errorf("expected 2 OpenIssue calls, got %d", len(calls))
+	} else {
+		for _, c := range calls {
+			if len(c.labels) != 1 || c.labels[0] != "idle-needs-human" {
+				t.Errorf("OpenIssue labels = %v, want [idle-needs-human]", c.labels)
+			}
+		}
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+	}
+}
+
+// TestSweepPullRequestViolation verifies D43/D44: a sweep that returns a
+// pull_request artifact is a non-retryable protocol violation — the task
+// is dropped (Nack non-retryable), never escalated, and OpenIssue is never
+// called.
+func TestSweepPullRequestViolation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	q := newStubQueue(t)
+	h := newStubHarness(t)
+	sink := newStubSink(t)
+	policy := newStubPolicy(true, nil)
+
+	log := slog.New(slog.DiscardHandler)
+	w := NewWorker(q, h, sink, policy, 1, 30*time.Second, 10*time.Minute, log)
+
+	task := makeSweepTask("t-sweep-pr")
+	if err := q.Enqueue(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		_ = w.Run(ctx)
+		close(done)
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+
+	q.mu.Lock()
+	atts := q.attempts["t-sweep-pr"]
+	q.mu.Unlock()
+	if len(atts) == 0 {
+		t.Fatal("task was never dequeued")
+	}
+	attemptID := atts[len(atts)-1].ID
+
+	// Harness returns a pull_request artifact — protocol violation.
+	h.SetOutcome("run-"+attemptID, harness.OutcomeSucceeded, []harness.Artifact{
+		{Kind: "pull_request", URI: "https://github.com/repo/pull/1"},
+	})
+
+	// Wait for the worker to process result.
+	time.Sleep(500 * time.Millisecond)
+	taskResult, _ := q.GetTask(ctx, "t-sweep-pr")
+	// The queue marks non-retryable as escalated (terminal).
+	if taskResult.State != queue.StateEscalated {
+		t.Errorf("expected escalated (dropped), got %s", taskResult.State)
+	}
+
+	// No OpenIssue calls, no label writes, no comments — never escalated.
+	if len(sink.OpenIssueCalls()) != 0 {
+		t.Errorf("expected 0 OpenIssue calls, got %d", len(sink.OpenIssueCalls()))
+	}
+	if len(sink.labels) != 0 {
+		t.Errorf("expected 0 label writes, got %d", len(sink.labels))
+	}
+	if len(sink.comments) != 0 {
+		t.Errorf("expected 0 comments, got %d", len(sink.comments))
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+	}
+}
+
+// TestSweepFeatureBranchViolation verifies D43/D44/D15: a sweep that returns
+// a feature branch is a non-retryable protocol violation — the task is
+// dropped, never escalated, and OpenIssue is never called.
+func TestSweepFeatureBranchViolation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	q := newStubQueue(t)
+	h := newStubHarness(t)
+	sink := newStubSink(t)
+	policy := newStubPolicy(true, nil)
+
+	log := slog.New(slog.DiscardHandler)
+	w := NewWorker(q, h, sink, policy, 1, 30*time.Second, 10*time.Minute, log)
+
+	task := makeSweepTask("t-sweep-branch")
+	if err := q.Enqueue(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		_ = w.Run(ctx)
+		close(done)
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+
+	q.mu.Lock()
+	atts := q.attempts["t-sweep-branch"]
+	q.mu.Unlock()
+	if len(atts) == 0 {
+		t.Fatal("task was never dequeued")
+	}
+	attemptID := atts[len(atts)-1].ID
+
+	// Harness returns a feature branch — protocol violation.
+	bp := "feature"
+	h.SetOutcome("run-"+attemptID, harness.OutcomeSucceeded, []harness.Artifact{
+		{Kind: "branch", BranchPurpose: &bp, URI: "https://github.com/repo/tree/feature/1"},
+	})
+
+	// Wait for the worker to process result.
+	time.Sleep(500 * time.Millisecond)
+	taskResult, _ := q.GetTask(ctx, "t-sweep-branch")
+	if taskResult.State != queue.StateEscalated {
+		t.Errorf("expected escalated (dropped), got %s", taskResult.State)
+	}
+
+	// No OpenIssue calls, no label writes, no comments.
+	if len(sink.OpenIssueCalls()) != 0 {
+		t.Errorf("expected 0 OpenIssue calls, got %d", len(sink.OpenIssueCalls()))
+	}
+	if len(sink.labels) != 0 {
+		t.Errorf("expected 0 label writes, got %d", len(sink.labels))
+	}
+	if len(sink.comments) != 0 {
+		t.Errorf("expected 0 comments, got %d", len(sink.comments))
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+	}
+}
+
+// TestSweepNeverEscalates verifies D45: a sweep task never escalates,
+// even on a failure outcome. The sweep Nacks and drops the task
+// without calling escalate (no comment, no label, no debug branch).
+func TestSweepNeverEscalates(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	q := newStubQueue(t)
+	h := newStubHarness(t)
+	sink := newStubSink(t)
+	policy := newStubPolicy(true, nil)
+
+	log := slog.New(slog.DiscardHandler)
+	w := NewWorker(q, h, sink, policy, 1, 30*time.Second, 10*time.Minute, log)
+
+	task := makeSweepTask("t-sweep-fail")
+	if err := q.Enqueue(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		_ = w.Run(ctx)
+		close(done)
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+
+	q.mu.Lock()
+	atts := q.attempts["t-sweep-fail"]
+	q.mu.Unlock()
+	if len(atts) == 0 {
+		t.Fatal("task was never dequeued")
+	}
+	attemptID := atts[len(atts)-1].ID
+
+	// Harness returns a non-retryable failure on the sweep run.
+	h.SetOutcome("run-"+attemptID, harness.OutcomeNonRetryableFailure, []harness.Artifact{
+		{Kind: "report", URI: "artifact-store/run-sweep/report"},
+	})
+
+	// Wait for the worker to process result.
+	time.Sleep(500 * time.Millisecond)
+	taskResult, _ := q.GetTask(ctx, "t-sweep-fail")
+	// The queue marks non-retryable as escalated (terminal).
+	if taskResult.State != queue.StateEscalated {
+		t.Errorf("expected escalated (dropped), got %s", taskResult.State)
+	}
+
+	// D45: sweep tasks never escalate — no comment, no label, no debug branch.
+	if len(sink.comments) != 0 {
+		t.Errorf("expected 0 escalation comments, got %d", len(sink.comments))
+	}
+	if len(sink.labels) != 0 {
+		t.Errorf("expected 0 escalation labels, got %d", len(sink.labels))
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+	}
+}
 // Helper for tests
 func (q *stubQueue) GetLeaseForTask(taskID string) (queue.Lease, bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	lease, ok := q.leases[taskID]
 	return lease, ok
+}
+
+// Helper for tests: get the recorded OpenIssue calls.
+func (s *stubSink) OpenIssueCalls() []struct {
+	repo   string
+	title  string
+	body   string
+	labels []string
+} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]struct {
+		repo   string
+		title  string
+		body   string
+		labels []string
+	}{}, s.openIssues...)
 }

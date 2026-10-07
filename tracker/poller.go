@@ -11,24 +11,46 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/seppaleinen/idle-deck/queue"
 	"github.com/seppaleinen/idle-deck/store"
 )
 
 // Poller runs the polling loop for a set of repositories (event-contract §2, §8).
 type Poller struct {
-	gh       *GitHub
-	q        queue.Queue
-	wm       store.WatermarkStore
-	repos    []string
-	interval time.Duration
-	now      func() time.Time
-	client   *http.Client
+	gh         *GitHub
+	q          queue.Queue
+	wm         store.WatermarkStore
+	repos      []string
+	interval   time.Duration
+	now        func() time.Time
+	client     *http.Client
+	sweepPeriod time.Duration
+	sweepRepos  []string
+	sweepPrompt string
+}
+
+// SweepConfig holds optional sweep configuration for the poller.
+type SweepConfig struct {
+	Period  time.Duration
+	Repos   []string
+	Prompt  string
+}
+
+// WithSweep returns a PollerOption that configures P3 sweep scheduling.
+func WithSweep(cfg SweepConfig) func(*Poller) {
+	return func(p *Poller) {
+		p.sweepPeriod = cfg.Period
+		p.sweepRepos = cfg.Repos
+		p.sweepPrompt = cfg.Prompt
+	}
 }
 
 // NewPoller creates a poller for the given repositories.
-func NewPoller(gh *GitHub, q queue.Queue, wm store.WatermarkStore, repos []string, interval time.Duration) *Poller {
-	return &Poller{
+// Accepts optional PollerOption functions to configure sweep.
+func NewPoller(gh *GitHub, q queue.Queue, wm store.WatermarkStore, repos []string, interval time.Duration, opts ...func(*Poller)) *Poller {
+	p := &Poller{
 		gh:       gh,
 		q:        q,
 		wm:       wm,
@@ -37,6 +59,10 @@ func NewPoller(gh *GitHub, q queue.Queue, wm store.WatermarkStore, repos []strin
 		now:      time.Now,
 		client:   &http.Client{Timeout: 30 * time.Second},
 	}
+	for _, opt := range opts {
+		opt(p)
+	}
+	return p
 }
 
 // Tick runs one polling cycle for all repositories.
@@ -50,6 +76,50 @@ func (p *Poller) Tick(ctx context.Context) error {
 		// Watermark advances to tick start AFTER pagination completes.
 		if err := p.wm.Save(ctx, repo, tickStart); err != nil {
 			return fmt.Errorf("watermark save: %w", err)
+		}
+	}
+	return nil
+}
+
+// Sweep enqueues P3 sweep tasks for configured repositories.
+// Returns nil if sweep is disabled (SweepPeriod == 0).
+// Dedupe key: github:sweep:<owner>/<repo>:<bucket> where bucket = now().Truncate(SweepPeriod).Unix().
+// ErrDuplicate on enqueue is a no-op (collapse repeated ticks within one bucket).
+func (p *Poller) Sweep(ctx context.Context) error {
+	if p.sweepPeriod <= 0 {
+		return nil // sweep disabled
+	}
+	now := p.now()
+	bucket := now.Truncate(p.sweepPeriod).Unix()
+
+	repos := p.sweepRepos
+	if len(repos) == 0 {
+		repos = p.repos
+	}
+
+	for _, repo := range repos {
+		dedupeKey := fmt.Sprintf("github:sweep:%s:%d", repo, bucket)
+		task := queue.Task{
+			ID:             uuid.New().String(),
+			RepositoryID:   repo,
+			Ticket:         queue.TrackerRef{}, // zero value for P3 (D44)
+			Tier:           queue.TierP3,
+			Prompt:         p.sweepPrompt,
+			State:          queue.StateQueued,
+			TimeoutSeconds: 3600,
+			Budget:         20000,
+			TriggeredBy: queue.TriggeredBy{
+				EventType:  "schedule.sweep",
+				DedupeKey:  dedupeKey,
+				ReceivedAt: now.UnixNano(),
+			},
+			CreatedAt: now.UnixNano(),
+		}
+		if err := p.q.Enqueue(ctx, task); err != nil {
+			if !errors.Is(err, queue.ErrDuplicate) {
+				return err
+			}
+			// Duplicate: already enqueued in this bucket, collapse silently.
 		}
 	}
 	return nil

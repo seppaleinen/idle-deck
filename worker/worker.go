@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -450,6 +451,14 @@ func (w *Worker) handleResult(ctx context.Context, lease queue.Lease, task queue
 		return nil, false
 	}
 
+	// P3 sweep tier: a sweep is a reporter, not an author (D43/D44/D45,
+	// ADR 0019). It files one issue per finding via OpenIssue, never opens
+	// a PR, and never escalates. The sweep branch handles its own artifact
+	// save, outcome mapping, and terminal state.
+	if task.Tier == queue.TierP3 {
+		return w.handleSweepResult(ctx, lease, task, result)
+	}
+
 	// Map harness artifacts to queue artifacts and save them.
 	artifacts := mapHarnessArtifacts(lease.AttemptID, result.Artifacts)
 	if len(artifacts) > 0 {
@@ -529,6 +538,157 @@ func (w *Worker) handleResult(ctx context.Context, lease queue.Lease, task queue
 	w.escalate(ctx, updated, result, lease.AttemptID)
 
 	return nil, false
+}
+
+// handleSweepResult processes a terminal RunResult for a P3 sweep task
+// (D43/D44/D45, ADR 0019/0020). A sweep is a reporter, not an author: it
+// files one issue per finding via OpenIssue, never opens a PR, and never
+// escalates (D45). The task carries no ticket (D44).
+func (w *Worker) handleSweepResult(ctx context.Context, lease queue.Lease, task queue.Task, result harness.RunResult) (error, bool) {
+	w.log.Info("worker: handleSweepResult start", "task_id", task.ID)
+	// Save artifacts first (log, report, etc.) for diagnostics.
+	artifacts := mapHarnessArtifacts(lease.AttemptID, result.Artifacts)
+	if len(artifacts) > 0 {
+		if err := w.queue.SaveArtifacts(ctx, lease.AttemptID, artifacts); err != nil {
+			w.log.Error("worker: save artifacts", "attempt_id", lease.AttemptID, "err", err)
+		}
+	}
+
+	// D43: a sweep may not produce a pull_request artifact, and may not
+	// produce a feature branch. Either is a non-retryable protocol violation.
+	for _, a := range result.Artifacts {
+		if a.Kind == string(queue.ArtifactPullRequest) {
+			w.log.Error("worker: sweep produced pull_request artifact (non-retryable protocol violation)",
+				"task_id", task.ID)
+			return w.nackSweepNonRetryable(ctx, lease, task)
+		}
+		if a.Kind == string(queue.ArtifactBranch) && a.BranchPurpose != nil && *a.BranchPurpose == string(queue.BranchFeature) {
+			w.log.Error("worker: sweep produced feature branch (non-retryable protocol violation)",
+				"task_id", task.ID)
+			return w.nackSweepNonRetryable(ctx, lease, task)
+		}
+	}
+
+	// D43/ADR 0020: file one issue per finding from the report artifact.
+	for _, a := range result.Artifacts {
+		if a.Kind == string(queue.ArtifactReport) {
+			w.fileSweepFindings(ctx, task, a)
+		}
+	}
+
+	// Map harness outcome to queue outcome.
+	var outcome queue.AttemptOutcome
+	switch result.Outcome {
+	case harness.OutcomeSucceeded:
+		outcome = queue.OutcomeSucceeded
+	case harness.OutcomeRetryableFailure:
+		outcome = queue.OutcomeRetryableFailure
+	case harness.OutcomeNonRetryableFailure:
+		outcome = queue.OutcomeNonRetryableFailure
+	case harness.OutcomeTimeout:
+		outcome = queue.OutcomeTimeout
+	case harness.OutcomePreempted:
+		outcome = queue.OutcomePreempted
+	default:
+		w.log.Warn("worker: unknown sweep outcome", "outcome", result.Outcome)
+		outcome = queue.OutcomeNonRetryableFailure
+	}
+
+	w.log.Info("worker: sweep run outcome",
+		"task_id", task.ID,
+		"tier", task.Tier,
+		"outcome", outcome,
+	)
+
+	if outcome == queue.OutcomeSucceeded {
+		if err := w.queue.Ack(ctx, lease, lease.AttemptID); err != nil {
+			if errors.Is(err, queue.ErrLeaseExpired) {
+				w.log.Warn("worker: ack lease expired (task may have been reclaimed)", "task_id", task.ID)
+				return nil, false
+			}
+			w.log.Error("worker: ack", "task_id", task.ID, "err", err)
+			return nil, false
+		}
+		// P3 carries no trigger label to remove (event-contract §6).
+		return nil, false
+	}
+
+	// Nack with the outcome. D45: sweep tasks never escalate — skip the
+	// escalation path entirely. If the queue marks the task escalated
+	// (e.g., non-retryable outcome or exhausted retries), it stays
+	// escalated without comment, label, or debug branch.
+	if err := w.queue.Nack(ctx, lease, lease.AttemptID, outcome); err != nil {
+		if errors.Is(err, queue.ErrLeaseExpired) {
+			w.log.Warn("worker: nack lease expired (task may have been reclaimed)", "task_id", task.ID)
+			return nil, false
+		}
+		w.log.Error("worker: nack", "task_id", task.ID, "err", err)
+		return nil, false
+	}
+	// D45: intentionally skip escalation check for sweep tier.
+	return nil, false
+}
+
+// nackSweepNonRetryable records a non-retryable protocol violation for a
+// sweep task and drops it. Sweep tasks never escalate (D45).
+func (w *Worker) nackSweepNonRetryable(ctx context.Context, lease queue.Lease, task queue.Task) (error, bool) {
+	if err := w.queue.Nack(ctx, lease, lease.AttemptID, queue.OutcomeNonRetryableFailure); err != nil {
+		if errors.Is(err, queue.ErrLeaseExpired) {
+			w.log.Warn("worker: nack lease expired (task may have been reclaimed)", "task_id", task.ID)
+			return nil, false
+		}
+		w.log.Error("worker: nack", "task_id", task.ID, "err", err)
+		return nil, false
+	}
+	// D45: sweep tasks never escalate. The non-retryable outcome drops the
+	// task; the queue's retry policy will not re-queue it, and we skip the
+	// escalation path.
+	return nil, false
+}
+
+// fileSweepFindings files one issue per finding from a report artifact via
+// TrackerSink.OpenIssue (D43, ADR 0019/0020). Each issue carries the
+// idle-needs-human label (D29) so P1 does not re-ingest it (D45).
+func (w *Worker) fileSweepFindings(ctx context.Context, task queue.Task, a harness.Artifact) {
+	// Prefer structured findings from the artifact; fall back to parsing
+	// the body as a JSON array of Finding.
+	findings := a.Findings
+	if len(findings) == 0 && a.Body != "" {
+		if err := json.Unmarshal([]byte(a.Body), &findings); err != nil {
+			w.log.Warn("worker: sweep report body not parseable as findings, filing raw body",
+				"task_id", task.ID, "err", err)
+			// File one issue with the raw body as description (D43).
+			if err := w.sink.OpenIssue(ctx, task.RepositoryID, "Sweep finding (unparseable report)",
+				a.Body, []string{labelNeedsHuman}); err != nil {
+				w.log.Error("worker: open issue for unparseable sweep report",
+					"task_id", task.ID, "err", err)
+			}
+			return
+		}
+	}
+
+	if len(findings) == 0 {
+		w.log.Info("worker: sweep report had no findings", "task_id", task.ID)
+		return
+	}
+
+	for _, f := range findings {
+		body := f.Description
+		if body == "" {
+			body = f.Title
+		}
+		title := f.Title
+		if title == "" {
+			title = "Sweep finding"
+		}
+		if f.Category != "" {
+			title = fmt.Sprintf("[%s] %s", f.Category, title)
+		}
+		if err := w.sink.OpenIssue(ctx, task.RepositoryID, title, body, []string{labelNeedsHuman}); err != nil {
+			w.log.Error("worker: open issue for sweep finding",
+				"task_id", task.ID, "title", title, "err", err)
+		}
+	}
 }
 
 // calculateBackoff returns the exponential backoff for a task based on attempt count (D37).
