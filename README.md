@@ -89,8 +89,20 @@ idle-deck **never merges**. It opens a Draft PR and stops. Autonomy is earned by
 
 ## For users
 
-**There is nothing to install yet.** This section is a statement of intent, and it will be rewritten
-once the backlog in [MVP backlog](https://github.com/seppaleinen/idle-deck/issues/10) has been worked.
+**idle-deck v0.1.0 is tagged and installable.** The MVP backlog
+([#10](https://github.com/seppaleinen/idle-deck/issues/10)) has been worked, so this section
+is no longer a statement of intent — it is the install.
+
+```bash
+go install github.com/seppaleinen/idle-deck@v0.1.0
+idle-deck --version
+```
+
+`@v0.1.0` is the reproducible install: a real tag on the commit that produced the
+passing binary. `@latest` tracks `main` and is a moving target. The binary is static and
+cgo-free — `CGO_ENABLED=0`, pure-Go SQLite — so it installs on any machine with Go 1.27,
+no Xcode CLT, no C toolchain, no container runtime
+([D32](https://github.com/seppaleinen/idle-deck/blob/main/AGENTS.md)).
 
 ### Supervision
 

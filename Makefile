@@ -23,9 +23,11 @@ dev:
 test:
 	@go test ./... -count=1 -timeout 60s
 
-# Build all packages
+# Build all packages. CGO_ENABLED=0 is asserted, not inherited: a dependency
+# that reintroduces cgo would silently break go install for users, so the
+# build gate must not depend on the environment being clean (ADR 0017).
 build:
-	@go build ./...
+	CGO_ENABLED=0 go build ./...
 
 # Static analysis
 vet:

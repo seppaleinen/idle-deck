@@ -18,7 +18,14 @@ jobs:
           comm -23 /tmp/cited /tmp/defined
           # If the command exits non-zero CI will fail – guard from stale D-ids.
       - name: Build all packages
-        run: go build ./...
+        run: |
+          # CGO_ENABLED=0 is asserted, not inherited: a dependency that
+          # reintroduces cgo would silently break go install for users, so
+          # the build gate must not depend on the environment being clean
+          # (ADR 0017).
+          CGO_ENABLED=0 go build ./...
+          CGO_ENABLED=0 go build -o /tmp/idle-deck-ci .
+          test "$(CGO_ENABLED=0 go env CGO_ENABLED)" = "0"
       - name: Vet packages
         run: go vet ./...
       - name: Test packages
@@ -26,5 +33,7 @@ jobs:
       - name: Smoke test
         run: |
           go run . --version
+          # v0.1.0: the tagged release version (gate 4 of #24)
+          go run . --version | grep -q "idle-deck v0.1.0" || { echo "FAIL: expected v0.1.0"; exit 1; }
           go run . check && { echo "FAIL: check should fail without config"; exit 1; } || echo "check refused without config (expected)"
           go run . run 2>/dev/null || echo "run refused as expected"
