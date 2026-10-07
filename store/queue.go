@@ -581,3 +581,109 @@ ON CONFLICT(repo) DO UPDATE SET
 	}
 	return nil
 }
+
+// HeartbeatStore provides daemon liveness + run-lock state (operator-surface §6).
+// The heartbeat row answers both "is it alive" and "how long has it been silent"
+// for free, with no new mechanism (operator-surface §6).
+type HeartbeatStore interface {
+	// Beat records a heartbeat at the given time. Always succeeds (upsert).
+	Beat(ctx context.Context, t time.Time) error
+	// LastBeat returns the most recent heartbeat time. Zero time if none.
+	LastBeat(ctx context.Context) (time.Time, error)
+	// TakeRunLock atomically claims the run lock (idempotent: returns true if
+	// it was already held by this caller). Used by the daemon to mark itself
+	// as the active run holder.
+	TakeRunLock(ctx context.Context) (bool, error)
+	// ReleaseRunLock clears the run lock.
+	ReleaseRunLock(ctx context.Context) error
+	// RunLockHeld reports whether the run lock is currently held.
+	RunLockHeld(ctx context.Context) (bool, error)
+	// LastPoll returns the last successful poll timestamp for a repo.
+	LastPoll(ctx context.Context, repo string) (time.Time, bool, error)
+	// SavePoll records a successful poll for a repo.
+	SavePoll(ctx context.Context, repo string, t time.Time) error
+}
+
+// SQLiteHeartbeat implements HeartbeatStore on the same SQLite queue database.
+type SQLiteHeartbeat struct {
+	db  *sql.DB
+	now func() time.Time
+}
+
+func NewSQLiteHeartbeat(db *sql.DB) *SQLiteHeartbeat {
+	return &SQLiteHeartbeat{db: db, now: time.Now}
+}
+
+func (h *SQLiteHeartbeat) Beat(ctx context.Context, t time.Time) error {
+	_, err := h.db.ExecContext(ctx, `
+INSERT INTO heartbeat (id, beat_at, run_lock) VALUES (1, ?, 0)
+ON CONFLICT(id) DO UPDATE SET beat_at = excluded.beat_at`,
+		t.UnixNano())
+	return err
+}
+
+func (h *SQLiteHeartbeat) LastBeat(ctx context.Context) (time.Time, error) {
+	var n int64
+	err := h.db.QueryRowContext(ctx, `SELECT beat_at FROM heartbeat WHERE id = 1`).Scan(&n)
+	if err == sql.ErrNoRows {
+		return time.Time{}, nil
+	}
+	if err != nil {
+		return time.Time{}, fmt.Errorf("heartbeat: last beat: %w", err)
+	}
+	return time.Unix(0, n), nil
+}
+
+func (h *SQLiteHeartbeat) TakeRunLock(ctx context.Context) (bool, error) {
+	var held int
+	err := h.db.QueryRowContext(ctx, `SELECT run_lock FROM heartbeat WHERE id = 1`).Scan(&held)
+	if err == sql.ErrNoRows {
+		_, err = h.db.ExecContext(ctx, `INSERT INTO heartbeat (id, beat_at, run_lock) VALUES (1, ?, 1)`, h.now().UnixNano())
+		return err == nil, err
+	}
+	if err != nil {
+		return false, fmt.Errorf("heartbeat: take lock: %w", err)
+	}
+	if held != 0 {
+		return false, nil
+	}
+	_, err = h.db.ExecContext(ctx, `UPDATE heartbeat SET run_lock = 1 WHERE id = 1`)
+	return err == nil, err
+}
+
+func (h *SQLiteHeartbeat) ReleaseRunLock(ctx context.Context) error {
+	_, err := h.db.ExecContext(ctx, `UPDATE heartbeat SET run_lock = 0 WHERE id = 1`)
+	return err
+}
+
+func (h *SQLiteHeartbeat) RunLockHeld(ctx context.Context) (bool, error) {
+	var held int
+	err := h.db.QueryRowContext(ctx, `SELECT run_lock FROM heartbeat WHERE id = 1`).Scan(&held)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("heartbeat: lock held: %w", err)
+	}
+	return held != 0, nil
+}
+
+func (h *SQLiteHeartbeat) LastPoll(ctx context.Context, repo string) (time.Time, bool, error) {
+	var n int64
+	err := h.db.QueryRowContext(ctx, `SELECT last_poll FROM tracker_polls WHERE repo = ?`, repo).Scan(&n)
+	if err == sql.ErrNoRows {
+		return time.Time{}, false, nil
+	}
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("poll: last: %w", err)
+	}
+	return time.Unix(0, n), true, nil
+}
+
+func (h *SQLiteHeartbeat) SavePoll(ctx context.Context, repo string, t time.Time) error {
+	_, err := h.db.ExecContext(ctx, `
+INSERT INTO tracker_polls (repo, last_poll) VALUES (?, ?)
+ON CONFLICT(repo) DO UPDATE SET last_poll = excluded.last_poll`,
+		repo, t.UnixNano())
+	return err
+}

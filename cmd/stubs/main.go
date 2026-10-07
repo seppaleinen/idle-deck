@@ -30,6 +30,11 @@ func main() {
 		User:      stubs.GitHubUser{Type: "User"},
 	})
 	tState.AdvanceWatermark(t0.Add(-time.Hour))
+	// Seed repo-level labels so `idle-deck check` step 5 can probe them.
+	tState.AddRepoLabel("idle-hotfix")
+	tState.AddRepoLabel("idle-ready")
+	tState.AddRepoLabel("idle-redo")
+	tState.AddRepoLabel("idle-needs-human")
 
 	// Harness stub
 	hState := stubs.NewHarnessState("stub-gpt-4o")

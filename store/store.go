@@ -19,7 +19,7 @@ func dsn(path string) string {
 	return path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode=WAL"
 }
 
-const SchemaVersion = 4
+const SchemaVersion = 6
 
 const v1Schema = `
 CREATE TABLE IF NOT EXISTS repositories (
@@ -100,6 +100,21 @@ CREATE TABLE IF NOT EXISTS tracker_watermarks (
 );
 `
 
+const v5AddTrackerPolls = `
+CREATE TABLE IF NOT EXISTS tracker_polls (
+    repo       TEXT PRIMARY KEY,
+    last_poll  INTEGER NOT NULL
+);
+`
+
+const v6AddHeartbeat = `
+CREATE TABLE IF NOT EXISTS heartbeat (
+    id         INTEGER PRIMARY KEY CHECK (id = 1),
+    beat_at    INTEGER NOT NULL,
+    run_lock   INTEGER NOT NULL DEFAULT 0
+);
+`
+
 type migration struct {
 	version int
 	sql     string
@@ -110,6 +125,18 @@ var migrations = []migration{
 	{version: 2, sql: v2AddTaskTriggerBy},
 	{version: 3, sql: v3AddTaskLineageAndAttemptArtifacts},
 	{version: 4, sql: v4AddTrackerWatermark},
+	{version: 5, sql: v5AddTrackerPolls},
+	{version: 6, sql: v6AddHeartbeat},
+}
+
+// CurrentVersion returns the schema version recorded in the database.
+// Returns 0 if no migrations have been recorded yet.
+func CurrentVersion(ctx context.Context, db *sql.DB) (int, error) {
+	var v int
+	if err := db.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM schema_version`).Scan(&v); err != nil {
+		return 0, fmt.Errorf("store: read schema_version: %w", err)
+	}
+	return v, nil
 }
 
 func Open(ctx context.Context, path string) (*sql.DB, error) {

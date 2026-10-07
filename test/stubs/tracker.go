@@ -54,6 +54,7 @@ type TrackerState struct {
 	Watermark    time.Time
 	Seeded       bool
 	NextIssueNum int
+	RepoLabels   map[string]bool
 	clock        func() time.Time
 }
 
@@ -62,6 +63,7 @@ func NewTrackerState(repo string) *TrackerState {
 	return &TrackerState{
 		Repo:         repo,
 		Issues:       make(map[int]*GitHubIssue),
+		RepoLabels:   make(map[string]bool),
 		NextIssueNum: 0,
 		clock:        func() time.Time { return time.Now().UTC() },
 	}
@@ -72,6 +74,14 @@ func (s *TrackerState) SetClock(clock func() time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.clock = clock
+}
+
+// AddRepoLabel records a label as existing on the repository itself
+// (operator-surface §5 step 5: which D29 labels exist in each repo).
+func (s *TrackerState) AddRepoLabel(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.RepoLabels[name] = true
 }
 
 // UpsertIssue adds or updates an issue.
@@ -223,7 +233,29 @@ func (s *TrackerServer) handleRepos(w http.ResponseWriter, r *http.Request) {
 	// Parse /repos/{owner}/{repo}/issues
 	path := strings.TrimPrefix(r.URL.Path, "/repos/")
 	parts := strings.Split(path, "/")
-	if len(parts) < 3 || parts[2] != "issues" {
+	if len(parts) < 3 {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if parts[2] == "labels" {
+		// /repos/{owner}/{repo}/labels/{label} — label existence probe.
+		// Returns 200 if the label exists in the repo, 404 otherwise.
+		if len(parts) < 4 {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		s.State.mu.Lock()
+		found := s.State.RepoLabels[parts[3]]
+		s.State.mu.Unlock()
+		if found {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(GitHubLabel{Name: parts[3], Color: "000000"})
+		} else {
+			http.Error(w, "not found", http.StatusNotFound)
+		}
+		return
+	}
+	if parts[2] != "issues" {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}

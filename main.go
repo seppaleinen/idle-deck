@@ -5,9 +5,11 @@ import (
 	"database/sql"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -63,17 +65,114 @@ func runCheck(args []string) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
+	ctx := context.Background()
 	cfg, err := config.Load(flags)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	// Step 4: SQLite path writable; schema-current is deferred (no storage schema exists yet).
-	if err := config.CheckDB(cfg.DB); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+
+	// Step 1: required variables present and non-empty (printing the name,
+	// never the value — D36).
+	if missing := cfg.MissingRequired(); len(missing) > 0 {
+		fmt.Fprintf(os.Stderr, "missing required configuration variables: %s\n", strings.Join(missing, ", "))
 		return 1
 	}
-	// Step 6: resolved configuration with secrets redacted.
+
+	// Step 2: one authenticated read against the tracker — confirms the PAT
+	// is valid and has Issues read access (operator-surface §5).
+	repos, err := config.ParseRepos(cfg.Repos)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "parse repos: %v\n", err)
+		return 1
+	}
+	trk := tracker.NewGitHub(cfg.GitHubAPI, cfg.GitHubToken, repos, nil)
+	if err := trk.ValidateRead(context.Background()); err != nil {
+		fmt.Fprintf(os.Stderr, "tracker read: %v\n", err)
+		return 1
+	}
+	fmt.Println("tracker: authenticated read OK")
+
+	// Step 3: one GET /health against the harness — confirms URL and bearer
+	// token (operator-surface §5). The harness /health must report
+	// reachability, not process liveness (D31).
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, cfg.HarnessURL+"/v1/health", nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "harness health: %v\n", err)
+		return 1
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.HarnessToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "harness health: %v\n", err)
+		return 1
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		fmt.Fprintf(os.Stderr, "harness health: status %d: %s\n", resp.StatusCode, string(b))
+		return 1
+	}
+	fmt.Println("harness: /health reachable")
+
+	// Step 4: SQLite path writable and schema current (D33: auto-migrations
+	// run forward-only at startup).
+	dbPath := config.ExpandHome(cfg.DB)
+	if err := config.CheckDB(dbPath); err != nil {
+		fmt.Fprintf(os.Stderr, "sqlite: %v\n", err)
+		return 1
+	}
+	db, err := store.Open(ctx, dbPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "sqlite: open: %v\n", err)
+		return 1
+	}
+	v, err := store.CurrentVersion(ctx, db)
+	db.Close()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "schema version: %v\n", err)
+		return 1
+	}
+	if v < store.SchemaVersion {
+		fmt.Fprintf(os.Stderr, "sqlite: schema stale (have %d, want %d)\n", v, store.SchemaVersion)
+		return 1
+	}
+	fmt.Printf("sqlite: schema current (v%d)\n", v)
+
+	// Step 5: which of the four D29 labels exist in each configured repository;
+	// for any missing, the exact `gh label create` command (operator-surface
+	// §5, D39). Colours are documented as a suggested palette, never applied.
+	type labelDef struct {
+		name  string
+		color string
+	}
+	labels := []labelDef{
+		{tracker.LabelHotfix, "ff0000"},
+		{tracker.LabelReady, "0086b3"},
+		{tracker.LabelRedo, "fbca04"},
+		{tracker.LabelNeedsHuman, "b60205"},
+	}
+	fmt.Println("\nLabels:")
+	for _, repo := range repos {
+		fmt.Printf("  %s:\n", repo)
+		for _, l := range labels {
+			exists, err := trk.LabelExists(context.Background(), repo, l.name)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "    %s: error: %v\n", l.name, err)
+				return 1
+			}
+			if exists {
+				fmt.Printf("    %s: present\n", l.name)
+			} else {
+				fmt.Printf("    %s: MISSING  (gh label create %s/%s --name \"%s\" --color \"%s\")\n",
+					l.name, repo, l.name, l.name, l.color)
+			}
+		}
+	}
+
+	// Step 6: resolved configuration with secrets redacted, non-secret values
+	// shown at their defaults (operator-surface §5, D36).
+	fmt.Println("\nConfiguration:")
 	fmt.Print(config.Format(config.Redact(cfg)))
 	return 0
 }
@@ -123,6 +222,9 @@ func runRun(args []string) int {
 	// Create watermarks store.
 	wm := store.NewSQLiteWatermarks(q.DB())
 
+	// Create heartbeat store (operator-surface §6): liveness + run lock.
+	hb := store.NewSQLiteHeartbeat(q.DB())
+
 	// Create tracker.
 	trk := tracker.NewGitHub(cfg.GitHubAPI, cfg.GitHubToken, repos, wm)
 
@@ -135,6 +237,19 @@ func runRun(args []string) int {
 	// Start poller goroutine.
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	// Release the run lock on any exit path (clean or not). Use a fresh
+	// context: ctx is already cancelled by the time this defer runs.
+	defer func() { _ = hb.ReleaseRunLock(context.Background()) }()
+
+	// Claim the run lock: the daemon is the active run holder.
+	// TakeRunLock returns (acquired, err): acquired=true means we now hold it.
+	if acquired, err := hb.TakeRunLock(ctx); err != nil {
+		log.Error("take run lock", "err", err)
+		return 1
+	} else if !acquired {
+		log.Warn("run lock already held by another process")
+		return 1
+	}
 
 	poller := tracker.NewPoller(trk, q, wm, repos, cfg.PollInterval)
 	go func() {
@@ -143,10 +258,17 @@ func runRun(args []string) int {
 		for {
 			select {
 			case <-ctx.Done():
+				_ = hb.ReleaseRunLock(ctx)
 				return
 			case <-ticker.C:
 				if err := poller.Tick(ctx); err != nil {
 					log.Error("poll tick failed", "err", err)
+					continue
+				}
+				// Beat on every successful poll tick (operator-surface §6).
+				_ = hb.Beat(ctx, time.Now())
+				for _, repo := range repos {
+					_ = hb.SavePoll(ctx, repo, time.Now())
 				}
 			}
 		}
@@ -174,6 +296,9 @@ func runStatus(args []string) int {
 	// Relaxed config load: defaults + --db flag override, skip Validate().
 	// Also read optional env vars for status (HarnessURL, HarnessToken).
 	cfg := config.Defaults()
+	if v := os.Getenv("IDLE_DECK_DB"); v != "" {
+		cfg.DB = v
+	}
 	if *dbFlag != "" {
 		cfg.DB = *dbFlag
 	}
@@ -199,6 +324,9 @@ func runStatus(args []string) int {
 		fmt.Println("================")
 		fmt.Println("No state yet (database not found)")
 		return 0
+	} else if err != nil {
+		fmt.Fprintf(os.Stderr, "status: stat DB: %v\n", err)
+		return 1
 	}
 
 	// Open DB read-only.
@@ -208,23 +336,40 @@ func runStatus(args []string) int {
 		return 1
 	}
 	defer db.Close()
+	hb := store.NewSQLiteHeartbeat(db)
 
 	fmt.Println("idle-deck status")
 	fmt.Println("================")
 
-	// 1. Heartbeat age (DB file mtime as proxy) + run lock.
-	info, err := os.Stat(dbPath)
+	// 1. Heartbeat age + run lock (operator-surface §6).
+	// A heartbeat older than three poll intervals is stale: the daemon is up
+	// but not ingesting, and looks exactly like a healthy one without it.
+	beat, err := hb.LastBeat(context.Background())
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "status: stat DB: %v\n", err)
+		fmt.Fprintf(os.Stderr, "status: heartbeat: %v\n", err)
 		return 1
 	}
-	age := time.Since(info.ModTime())
-	fmt.Printf("Heartbeat age: %s\n", age.Round(time.Second))
-
-	var runningCount int
-	db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM tasks WHERE state = 'running'`).Scan(&runningCount)
-	if runningCount > 0 {
-		fmt.Println("Run lock: held")
+	pollInterval := 60 * time.Second
+	if beat.IsZero() {
+		fmt.Println("Heartbeat: never (daemon has not run)")
+	} else {
+		age := time.Since(beat)
+		fmt.Printf("Heartbeat age: %s\n", age.Round(time.Second))
+		if age > 3*pollInterval {
+			fmt.Println("Heartbeat: STALE (daemon may be dead or not polling)")
+		}
+	}
+	held, err := hb.RunLockHeld(context.Background())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "status: run lock: %v\n", err)
+		return 1
+	}
+	if held {
+		if beat.IsZero() || time.Since(beat) > 3*pollInterval {
+			fmt.Println("Run lock: held but heartbeat stale (orphaned lock)")
+		} else {
+			fmt.Println("Run lock: held")
+		}
 	} else {
 		fmt.Println("Run lock: free")
 	}
@@ -244,8 +389,10 @@ func runStatus(args []string) int {
 		fmt.Printf("  %s %s: %d\n", state, tier, count)
 	}
 
-	// 3. Last poll per repo + watermark.
-	fmt.Println("\nWatermarks:")
+	// 3. Last successful poll per repo + watermark (operator-surface §6).
+	// The last-poll-plus-watermark pair is what tells an operator whether
+	// ingestion is silently stuck (operator-surface §6).
+	fmt.Println("\nPolls and watermarks:")
 	rows2, err := db.QueryContext(context.Background(), `SELECT repo, watermark, updated_at FROM tracker_watermarks ORDER BY repo`)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "status: query watermarks: %v\n", err)
@@ -256,7 +403,17 @@ func runStatus(args []string) int {
 		var repo, watermark string
 		var updatedAt int64
 		rows2.Scan(&repo, &watermark, &updatedAt)
-		fmt.Printf("  %s: watermark=%s\n", repo, watermark)
+		lastPoll, seeded, err := hb.LastPoll(context.Background(), repo)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "status: query poll: %v\n", err)
+			return 1
+		}
+		if seeded {
+			fmt.Printf("  %s: watermark=%s  last poll=%s\n", repo, watermark, lastPoll.Round(time.Second))
+		} else {
+			fmt.Printf("  %s: watermark=%s  last poll: never\n", repo, watermark)
+		}
+		_ = updatedAt
 	}
 
 	// 4. Active task.
@@ -284,7 +441,8 @@ func runStatus(args []string) int {
 		return 1
 	}
 
-	// 5. Harness reachability.
+	// 5. Harness reachability, and the outcome of the most recent call
+	// (operator-surface §6).
 	fmt.Println("\nHarness:")
 	if cfg.HarnessURL != "" {
 		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, cfg.HarnessURL+"/v1/health", nil)

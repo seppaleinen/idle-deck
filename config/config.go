@@ -443,7 +443,6 @@ func ExpandHome(p string) string {
 
 // CheckDB verifies that the SQLite database path is writable.
 // It creates the parent directory if needed and attempts a temp-file probe.
-// The schema-current check is deferred to storage slice #10 (no schema exists yet).
 func CheckDB(path string) error {
 	dir := filepath.Dir(expandHome(path))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -455,8 +454,5 @@ func CheckDB(path string) error {
 	}
 	f.Close()
 	os.Remove(f.Name())
-	// Schema-current check is deferred to storage slice #10; no schema exists yet.
-	fmt.Printf("schema: pending (storage slice #10 – no schema exists yet)\n")
-	fmt.Printf("SQLite: path %q writable\n", path)
 	return nil
 }

@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -198,4 +201,65 @@ func (g *GitHub) SetLabels(ctx context.Context, ref queue.TrackerRef, add, remov
 // findings (ADR 0020, D43).
 func (g *GitHub) OpenIssue(ctx context.Context, repo string, title, body string, labels []string) error {
 	return g.postIssue(ctx, repo, title, body, labels)
+}
+
+// ValidateRead performs one authenticated read against the tracker
+// (operator-surface §5 step 2): confirms the PAT is valid and has Issues
+// read access. It GETs the first configured repo's issue list; a 200 means
+// the credential is good. 401/403 is an auth failure; 404 means the repo
+// is not accessible.
+func (g *GitHub) ValidateRead(ctx context.Context) error {
+	if len(g.allowlist) == 0 {
+		return nil
+	}
+	repo := ""
+	for r := range g.allowlist {
+		repo = r
+		break
+	}
+	endpoint := fmt.Sprintf("%s/repos/%s/issues?per_page=1", g.apiURL, repo)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+g.token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	resp, err := g.httpClient().Do(req)
+	if err != nil {
+		return fmt.Errorf("tracker: read: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		return nil
+	}
+	b, _ := io.ReadAll(resp.Body)
+	return fmt.Errorf("tracker: read: status %d: %s", resp.StatusCode, string(b))
+}
+
+// LabelExists reports whether the given label exists in the repository.
+// Used by `idle-deck check` step 5 (operator-surface §5) to report which of
+// the four D29 labels are present and print `gh label create` for missing ones.
+// Returns (false, nil) on 404 (label absent); an error on any other failure.
+func (g *GitHub) LabelExists(ctx context.Context, repo, label string) (bool, error) {
+	endpoint := fmt.Sprintf("%s/repos/%s/labels/%s", g.apiURL, repo, url.QueryEscape(label))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return false, err
+	}
+	req.Header.Set("Authorization", "Bearer "+g.token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	resp, err := g.httpClient().Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return true, nil
+	case http.StatusNotFound:
+		return false, nil
+	default:
+		b, _ := io.ReadAll(resp.Body)
+		return false, fmt.Errorf("label %s: %d: %s", label, resp.StatusCode, string(b))
+	}
 }
