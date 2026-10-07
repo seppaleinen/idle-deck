@@ -2,6 +2,8 @@ package tracker
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,8 +12,6 @@ import (
 	"net/url"
 	"strings"
 	"time"
-
-	"github.com/google/uuid"
 
 	"github.com/seppaleinen/idle-deck/queue"
 	"github.com/seppaleinen/idle-deck/store"
@@ -99,8 +99,15 @@ func (p *Poller) Sweep(ctx context.Context) error {
 
 	for _, repo := range repos {
 		dedupeKey := fmt.Sprintf("github:sweep:%s:%d", repo, bucket)
+		// Deterministic ID from the dedupe key so that repeated
+		// enqueues within the same bucket are idempotent
+		// (INSERT OR IGNORE on the primary key). This is the
+		// storage-side mechanism that collapses repeated ticks
+		// into one task per bucket (D28).
+		hash := sha256.Sum256([]byte(dedupeKey))
+		taskID := "sweep-" + hex.EncodeToString(hash[:])
 		task := queue.Task{
-			ID:             uuid.New().String(),
+			ID:             taskID,
 			RepositoryID:   repo,
 			Ticket:         queue.TrackerRef{}, // zero value for P3 (D44)
 			Tier:           queue.TierP3,

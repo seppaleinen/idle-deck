@@ -297,3 +297,152 @@ func TestPollerTick(t *testing.T) {
 		t.Errorf("watermark = %v, want %v", wmVal, p.now())
 	}
 }
+
+// TestPollerSweepDisabled verifies SweepPeriod=0 disables sweeping entirely —
+// no P3 task is ever enqueued regardless of sweepRepos.
+func TestPollerSweepDisabled(t *testing.T) {
+	repo := "acme/widgets"
+	dbPath := t.TempDir() + "/sweep.db"
+	db, err := store.Open(context.Background(), dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	wm := store.NewSQLiteWatermarks(db)
+	queue := store.NewSQLiteQueue(dbPath, store.WithLeaseDuration(5*time.Minute), store.WithMaxAttempts(3))
+	gh := NewGitHub("http://localhost", "token", []string{repo}, wm)
+	p := NewPoller(gh, queue, wm, []string{repo}, 60*time.Second,
+		WithSweep(SweepConfig{
+			Period: 0, // disabled
+			Repos:  []string{repo},
+			Prompt: "sweep prompt",
+		}))
+	ctx := context.Background()
+	if err := p.Sweep(ctx); err != nil {
+		t.Fatalf("Sweep returned error: %v", err)
+	}
+	var count int
+	err = db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM tasks WHERE tier = 'P3'`).Scan(&count)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Errorf("expected 0 P3 tasks, got %d", count)
+	}
+}
+
+// TestPollerSweepEnqueuesP3 verifies Sweep enqueues a P3 task with correct
+// properties and dedupe key when SweepPeriod > 0.
+func TestPollerSweepEnqueuesP3(t *testing.T) {
+	repo := "acme/widgets"
+	dbPath := t.TempDir() + "/sweep.db"
+	db, err := store.Open(context.Background(), dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	wm := store.NewSQLiteWatermarks(db)
+	queue := store.NewSQLiteQueue(dbPath, store.WithLeaseDuration(5*time.Minute), store.WithMaxAttempts(3))
+	gh := NewGitHub("http://localhost", "token", []string{repo}, wm)
+	sweepPeriod := 24 * time.Hour
+	p := NewPoller(gh, queue, wm, []string{repo}, 60*time.Second,
+		WithSweep(SweepConfig{
+			Period: sweepPeriod,
+			Repos:  []string{repo},
+			Prompt: "sweep prompt",
+		}))
+	p.now = func() time.Time { return time.Date(2026, 9, 29, 9, 0, 0, 0, time.UTC) }
+	ctx := context.Background()
+	if err := p.Sweep(ctx); err != nil {
+		t.Fatalf("Sweep failed: %v", err)
+	}
+	var count int
+	err = db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM tasks WHERE tier = 'P3'`).Scan(&count)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Errorf("expected 1 P3 task, got %d", count)
+	}
+	var taskID, dedupeKey, tier, prompt string
+	var budget, timeoutSec int
+	err = db.QueryRowContext(context.Background(), `
+		SELECT id, dedupe_key, tier, prompt, budget, timeout_seconds
+		FROM tasks WHERE tier = 'P3'`).
+		Scan(&taskID, &dedupeKey, &tier, &prompt, &budget, &timeoutSec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tier != "P3" {
+		t.Errorf("tier: got %s, want P3", tier)
+	}
+	if budget != 20000 {
+		t.Errorf("budget: got %d, want 20000", budget)
+	}
+	if timeoutSec != 3600 {
+		t.Errorf("timeout_seconds: got %d, want 3600", timeoutSec)
+	}
+	if prompt != "sweep prompt" {
+		t.Errorf("prompt: got %q, want %q", prompt, "sweep prompt")
+	}
+	// Dedupe key format: github:sweep:<owner>/<repo>:<bucket>
+	expectedBucket := time.Date(2026, 9, 29, 9, 0, 0, 0, time.UTC).Truncate(sweepPeriod).Unix()
+	expectedDedupeKey := fmt.Sprintf("github:sweep:%s:%d", repo, expectedBucket)
+	if dedupeKey != expectedDedupeKey {
+		t.Errorf("dedupe_key: got %q, want %q", dedupeKey, expectedDedupeKey)
+	}
+	if taskID == "" {
+		t.Error("task ID is empty")
+	}
+}
+
+// TestPollerSweepDedupeCollapse verifies that repeated Sweep calls within the
+// same bucket collapse to a single task (ErrDuplicate is a no-op). A new bucket
+// produces a new task.
+func TestPollerSweepDedupeCollapse(t *testing.T) {
+	repo := "acme/widgets"
+	dbPath := t.TempDir() + "/sweep.db"
+	db, err := store.Open(context.Background(), dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	wm := store.NewSQLiteWatermarks(db)
+	queue := store.NewSQLiteQueue(dbPath, store.WithLeaseDuration(5*time.Minute), store.WithMaxAttempts(3))
+	gh := NewGitHub("http://localhost", "token", []string{repo}, wm)
+	sweepPeriod := 24 * time.Hour
+	p := NewPoller(gh, queue, wm, []string{repo}, 60*time.Second,
+		WithSweep(SweepConfig{
+			Period: sweepPeriod,
+			Repos:  []string{repo},
+			Prompt: "sweep prompt",
+		}))
+	// First call at bucket boundary.
+	bucket0 := time.Date(2026, 9, 29, 9, 0, 0, 0, time.UTC)
+	p.now = func() time.Time { return bucket0 }
+	ctx := context.Background()
+	if err := p.Sweep(ctx); err != nil {
+		t.Fatalf("first Sweep: %v", err)
+	}
+	// Second call within same bucket (different time, same bucket).
+	bucket0Plus1h := bucket0.Add(1 * time.Hour)
+	p.now = func() time.Time { return bucket0Plus1h }
+	if err := p.Sweep(ctx); err != nil {
+		t.Fatalf("second Sweep (same bucket): %v", err)
+	}
+	// Third call in next bucket.
+	bucket1 := bucket0.Add(sweepPeriod)
+	p.now = func() time.Time { return bucket1 }
+	if err := p.Sweep(ctx); err != nil {
+		t.Fatalf("third Sweep (next bucket): %v", err)
+	}
+	var count int
+	err = db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM tasks WHERE tier = 'P3'`).Scan(&count)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Two buckets -> 2 tasks (first two calls collapsed to one via dedupe).
+	if count != 2 {
+		t.Errorf("expected 2 P3 tasks (one per bucket), got %d", count)
+	}
+}
