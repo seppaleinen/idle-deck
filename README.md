@@ -1,8 +1,8 @@
 # idle-deck
 
-> **Status: pre-implementation.** No code exists yet. The architecture is being locked down on
-> [Wayfinder map #3](https://github.com/seppaleinen/idle-deck/issues/3). This README describes where
-> the project is going, not something you can run today.
+> **Status: v0.1.0 — tagged and installable.** The MVP is built, tested, and verified. This README
+> describes what it does and how to run it. For a step-by-step walkthrough, see
+> [GETTING-STARTED.md](GETTING-STARTED.md).
 
 idle-deck turns synchronous developer workflows into an **event-driven background pipeline**. You
 label an issue; idle-deck picks it up, runs an agent against it while the machine is free, and comes
@@ -72,7 +72,8 @@ not the bottleneck ([D31](https://github.com/seppaleinen/idle-deck/blob/main/AGE
 Every tier has a trigger, and the four label names are one collision-safe vocabulary: they all start
 with `idle-` so idle-deck can never hijack a repository's own `ready` label and silently spawn runs.
 idle-deck **polls** — it has no webhook receiver, so there is nothing to expose and no signature to
-verify. What a P3 sweep actually looks for is still open policy; only its trigger is settled. See the
+verify. A P3 sweep scans for stale TODO/FIXME markers and files one issue per finding labelled
+`idle-needs-human`; it never opens a PR. See the
 [event contract](docs/architecture/event-contract.md).
 
 ### When a task fails
@@ -151,43 +152,29 @@ task that inherits the debug branch.
 
 ## For developers
 
-**Also nothing to build yet.** What follows is how the work is organised.
+**The MVP is built.** What follows is how the work is organised and where the next work lives.
 
 ### Read these, in order
 
 1. **[`AGENTS.md`](AGENTS.md)** — every decision, with its rationale and a stable id. Read it first,
    every session. The ADR convention and the multi-behavioural decisions' detail live in
    [`docs/adr/README.md`](docs/adr/README.md).
-2. **[Map #3](https://github.com/seppaleinen/idle-deck/issues/3)** — the live plan. Destination, notes,
+2. **[GETTING-STARTED.md](GETTING-STARTED.md)** — how to run and try the MVP locally.
+3. **[Map #3](https://github.com/seppaleinen/idle-deck/issues/3)** — the live plan. Destination, notes,
    closed decisions, and fog.
-3. **[#1 Architecture Handover & Domain Ontology](https://github.com/seppaleinen/idle-deck/issues/1)**
-   — the original design. A strong draft, not scripture. It is being pressure-tested, and several of
-   its assumptions do not survive contact with reality (see below).
 
 ### How the work is organised
 
-Deciding and building are separate jobs, and this repository is currently in the deciding job
-([D2](https://github.com/seppaleinen/idle-deck/blob/main/AGENTS.md)). The map's frontier is the set of
-open, unblocked, unclaimed child issues — GitHub renders the blocking graph natively, so the frontier is
-visible in the issue view without opening anything. Claim a ticket by assigning it to yourself before
+Deciding and building are separate jobs ([D2](https://github.com/seppaleinen/idle-deck/blob/main/AGENTS.md)).
+The map's first lock — architecture, ontology, and an execution-ready backlog — is closed, and the
+slices that followed it (#14–#26) are built, tested, and tagged `v0.1.0`. The map's frontier is the set
+of open, unblocked, unclaimed child issues — GitHub renders the blocking graph natively, so the frontier
+is visible in the issue view without opening anything. Claim a ticket by assigning it to yourself before
 doing any work, and resolve **one** ticket per session.
 
 Tickets are worked through the handover protocol: each resolution returns STATUS, SUMMARY, RATIONALE,
 and TRACE. Implementation tickets then run through the dev pipeline
-(`dev-team-lead → dev-architect → backend-engineer → test-engineer → code-reviewer`).
-
-The map has **two locks**, in order:
-
-1. **Architecture.** A reviewed ontology in `docs/ontology.md` and a set of decision records.
-2. **An execution-ready backlog.** Issues specified well enough that an implementation session starts
-   without making a further decision.
-
-The frontier moves, so it is read from [map #3](https://github.com/seppaleinen/idle-deck/issues/3)
-rather than restated here. The operator surface
-([#11](https://github.com/seppaleinen/idle-deck/issues/11)) and the framework-agnosticism check
-([#12](https://github.com/seppaleinen/idle-deck/issues/12)) are both closed; what is left before the
-backlog can be sliced is [what a P3 sweep does](https://github.com/seppaleinen/idle-deck/issues/13),
-then [the MVP backlog](https://github.com/seppaleinen/idle-deck/issues/10) itself.
+(`dev-team-lead → backend-engineer → test-engineer → code-reviewer`).
 
 ### Stack
 
@@ -195,16 +182,14 @@ Go 1.27 (1.27.1 installed locally), SQLite for the queue, GitHub as the only tra
 harness, CLI-first ([D9](https://github.com/seppaleinen/idle-deck/blob/main/AGENTS.md),
 [D13](https://github.com/seppaleinen/idle-deck/blob/main/AGENTS.md)).
 
-There is no CI yet, no build, and no test suite. Adding them is a cross-cutting item in the backlog
-([Install, run, configure](https://github.com/seppaleinen/idle-deck/issues/11)) — now locked, in
-[`docs/operations/operator-surface.md`](docs/operations/operator-surface.md).
+Build, test, and CI are locked and in
+[`docs/operations/operator-surface.md`](docs/operations/operator-surface.md): `make dev` for local
+development with HTTP stubs, `make test` for the suite, `make build` for the static binary.
 
-### If you are about to build something
+### Known problems in the original handover
 
-Don't. Not until [MVP backlog](https://github.com/seppaleinen/idle-deck/issues/10) has produced the
-issue list, and not until [Architecture boundaries](https://github.com/seppaleinen/idle-deck/issues/6)
-has fixed the interface seams. Guessing an interface and then writing three implementations against it
-is the specific failure mode this map exists to prevent.
+If you read issue #1, you will notice things this effort is deliberately not carrying forward. They
+are tracked, not quietly dropped:
 
 ### Known problems in the original handover
 
@@ -231,9 +216,10 @@ are tracked, not quietly dropped:
 
 ## Contributing
 
-Nothing is merged yet, and nothing is being built until the map's first lock lands. If you want to
-help, the useful contributions right now are decisions, not code: claim an open frontier ticket on
-[#3](https://github.com/seppaleinen/idle-deck/issues/3) and resolve it.
+The MVP is tagged and installable. If you want to help, claim an open frontier ticket on
+[#3](https://github.com/seppaleinen/idle-deck/issues/3) and resolve it. The next slices are beyond the
+MVP: release binaries, Homebrew, containers, a YAML config, the macOS Keychain, a second harness
+adapter, and a GUI.
 
 ## License
 
