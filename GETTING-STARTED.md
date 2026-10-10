@@ -129,6 +129,94 @@ idle-deck run
 
 > **Note**: The remote server requires a working opencode installation (`opencode` on PATH) and a gitHub token with repo scope for git operations. The `IDLE_DECK_GITHUB_TOKEN` is still needed for idle-deck's own issue/comment traffic.
 
+## Dashboard (read-only web UI + actions)
+
+idle-deck includes a built-in dashboard server for observability and
+operator control. It runs on `127.0.0.1:8090` by default and serves
+an embedded single-page app plus a JSON API.
+
+### Start the dashboard
+
+```bash
+idle-deck serve
+```
+
+Optional env vars / flags:
+
+| Variable | Flag | Default | Purpose |
+|---|---|---|---|
+| `IDLE_DECK_DASHBOARD_ADDR` | `--dashboard-addr` | `127.0.0.1:8090` | Listen address |
+| `IDLE_DECK_DASHBOARD_ACTIONS` | `--dashboard-actions` | `false` | Enable write actions (poll/cancel/retry) |
+
+The dashboard reads the same SQLite database as the daemon (read-only,
+WAL mode). It requires no auth — local-only by design (D4).
+
+### Dashboard UI
+
+Open `http://127.0.0.1:8090/` in a browser. Panels:
+
+- **Heartbeat** — daemon liveness (beat age, stale flag) + run lock holder
+- **Harness** — live `GET /v1/health` probe (reachable, status code, body)
+- **Repositories** — configured repos, watermark, last poll time
+- **Queue** — task counts by state (queued/running/succeeded/escalated) and tier
+- **Active task** — running task ID, tier, role, attempt, elapsed time
+- **Recent attempts** — last 50 attempts with outcome, timestamps, ticket link
+- **Recent artifacts** — branches, PRs, comments, reports produced
+- **Configuration** — redacted view of all resolved config (secrets hidden)
+
+The UI auto-refreshes every 5 seconds.
+
+### JSON API
+
+All endpoints return JSON; `[]` for empty collections (never `null`).
+
+| Endpoint | Description |
+|---|---|
+| `GET /api/status` | Single "everything" payload (used by UI) |
+| `GET /api/health` | Dashboard liveness (`{"status":"ok"}`) |
+| `GET /api/repos` | Per-repo watermark + last poll |
+| `GET /api/queue` | Queue depth by state+tier, totals by state |
+| `GET /api/tasks?limit=50&offset=0&state=running&tier=P2` | Paginated task list with latest attempt |
+| `GET /api/attempts` | Last 50 attempts with outcomes |
+| `GET /api/artifacts` | Last 100 artifacts across all attempts |
+| `GET /api/heartbeat` | Beat time, stale flag, run lock |
+| `GET /api/config` | Full redacted config |
+
+#### Actions (opt-in, requires `IDLE_DECK_DASHBOARD_ACTIONS=true`)
+
+Actions are written to the `dashboard_actions` table and processed
+by the daemon's poller on its next tick (every 60s by default).
+The HTTP call returns immediately with an `action_id`; the action
+is executed asynchronously.
+
+| Endpoint | Payload | Effect |
+|---|---|---|
+| `POST /api/actions/poll` | `{"repo":"owner/repo"}` | Trigger a poll for that repo |
+| `POST /api/actions/cancel` | `{"task_id":"..."}` | Mark running task as escalated |
+| `POST /api/actions/retry` | `{"task_id":"..."}` | Re-enqueue task for another attempt |
+
+Example:
+
+```bash
+# Enable actions
+IDLE_DECK_DASHBOARD_ACTIONS=true idle-deck serve
+
+# In another terminal, trigger a poll
+curl -X POST http://127.0.0.1:8090/api/actions/poll \
+  -H "Content-Type: application/json" \
+  -d '{"repo":"seppaleinen/idle-deck"}'
+```
+
+### Notes
+
+- The `serve` command is a **fourth CLI command** (D33 surface grows by one).
+  The MVP stated `run`/`status`/`check`/`--version`; `serve` is an explicit
+  extension for observability.
+- Actions are **disabled by default** — they require opt-in via the env var
+  or flag. This preserves the read-only MVP contract.
+- The dashboard and daemon share the same SQLite database. The dashboard
+  opens it read-only (`_mode=ro`) so concurrent reads don't block the
+  daemon's writes.
 
 ## Supervised (launchd)
 
