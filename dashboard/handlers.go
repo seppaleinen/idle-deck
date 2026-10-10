@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/seppaleinen/idle-deck/config"
@@ -358,3 +359,179 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	redacted := config.Redact(s.cfg)
 	s.respondJSON(w, r, http.StatusOK, map[string]string{"config": config.Format(redacted)})
 }
+
+// handleTasks returns the full task list with pagination and optional
+// state/tier filters. Empty result is `[]`, never `null`.
+func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	q := r.URL.Query()
+	limit := 50
+	if v := q.Get("limit"); v != "" {
+		if n, err := parseInt(v); err == nil && n > 0 {
+			limit = n
+		} else {
+			s.respondError(w, r, http.StatusBadRequest, "limit: must be a positive integer")
+			return
+		}
+	}
+	offset := 0
+	if v := q.Get("offset"); v != "" {
+		if n, err := parseInt(v); err == nil && n >= 0 {
+			offset = n
+		} else {
+			s.respondError(w, r, http.StatusBadRequest, "offset: must be a non-negative integer")
+			return
+		}
+	}
+	stateFilter := q.Get("state")
+	tierFilter := q.Get("tier")
+	if stateFilter != "" && !validTaskState(stateFilter) {
+		s.respondError(w, r, http.StatusBadRequest, "state: invalid value")
+		return
+	}
+	if tierFilter != "" && !validTaskTier(tierFilter) {
+		s.respondError(w, r, http.StatusBadRequest, "tier: invalid value")
+		return
+	}
+
+	// Build the WHERE clause dynamically.
+	var where []string
+	var args []interface{}
+	if stateFilter != "" {
+		where = append(where, "t.state = ?")
+		args = append(args, stateFilter)
+	}
+	if tierFilter != "" {
+		where = append(where, "t.tier = ?")
+		args = append(args, tierFilter)
+	}
+	// Count total for pagination metadata.
+	var total int
+	countQuery := `SELECT COUNT(*) FROM tasks t`
+	if len(where) > 0 {
+		countQuery += " WHERE " + joinWhere(where)
+	}
+	if err := s.dbQueryRow(ctx, countQuery, args...).Scan(&total); err != nil {
+		s.respondError(w, r, http.StatusInternalServerError, "count tasks: "+err.Error())
+		return
+	}
+
+	query := `
+		SELECT t.id, t.repository_id, t.tier, t.state, t.prompt,
+		       t.ticket_url, t.created_at, t.timeout_seconds, t.budget,
+		       a.id, a.outcome, a.started_at, a.finished_at
+		FROM tasks t
+		LEFT JOIN (
+			SELECT task_id, id, outcome, started_at, finished_at,
+			       ROW_NUMBER() OVER (PARTITION BY task_id ORDER BY ordinal DESC) AS rn
+			FROM attempts
+		) a ON a.task_id = t.id AND a.rn = 1
+	`
+	if len(where) > 0 {
+		query += " WHERE " + joinWhere(where)
+	}
+	query += " ORDER BY t.created_at DESC LIMIT ? OFFSET ?"
+	args = append(args, limit, offset)
+
+	rows, err := s.dbQuery(ctx, query, args...)
+	if err != nil {
+		s.respondError(w, r, http.StatusInternalServerError, "query tasks: "+err.Error())
+		return
+	}
+	defer rows.Close()
+
+	type taskRow struct {
+		ID            string     `json:"id"`
+		RepositoryID  string     `json:"repository_id"`
+		Tier          string     `json:"tier"`
+		State         string     `json:"state"`
+		Prompt        string     `json:"prompt"`
+		TicketURL     string     `json:"ticket_url"`
+		CreatedAt     int64      `json:"created_at"`
+		TimeoutSecs   int        `json:"timeout_seconds"`
+		Budget        int        `json:"budget"`
+		AttemptID     string     `json:"attempt_id,omitempty"`
+		Outcome       string     `json:"outcome,omitempty"`
+		StartedAt     *time.Time `json:"started_at,omitempty"`
+		FinishedAt    *time.Time `json:"finished_at,omitempty"`
+	}
+	var out []taskRow
+	for rows.Next() {
+		var tr taskRow
+		var attemptID sql.NullString
+		var outcome sql.NullString
+		var startedAt, finishedAt sql.NullInt64
+		if err := rows.Scan(&tr.ID, &tr.RepositoryID, &tr.Tier, &tr.State, &tr.Prompt,
+			&tr.TicketURL, &tr.CreatedAt, &tr.TimeoutSecs, &tr.Budget,
+			&attemptID, &outcome, &startedAt, &finishedAt); err != nil {
+			s.respondError(w, r, http.StatusInternalServerError, "scan task: "+err.Error())
+			return
+		}
+		tr.AttemptID = attemptID.String
+		tr.Outcome = outcome.String
+		if startedAt.Valid {
+			t := time.Unix(0, startedAt.Int64)
+			tr.StartedAt = &t
+		}
+		if finishedAt.Valid {
+			t := time.Unix(0, finishedAt.Int64)
+			tr.FinishedAt = &t
+		}
+		out = append(out, tr)
+	}
+	if out == nil {
+		out = []taskRow{}
+	}
+	s.respondJSON(w, r, http.StatusOK, map[string]interface{}{
+		"tasks": out,
+		"total": total,
+		"limit": limit,
+		"offset": offset,
+	})
+}
+
+func validTaskState(s string) bool {
+	switch s {
+	case "queued", "running", "succeeded", "escalated":
+		return true
+	default:
+		return false
+	}
+}
+
+func validTaskTier(s string) bool {
+	switch s {
+	case "P0", "P1", "P2", "P3":
+		return true
+	default:
+		return false
+	}
+}
+
+func joinWhere(parts []string) string {
+	var b strings.Builder
+	for i, p := range parts {
+		if i > 0 {
+			b.WriteString(" AND ")
+		}
+		b.WriteString(p)
+	}
+	return b.String()
+}
+
+func parseInt(s string) (int, error) {
+	n := 0
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return 0, errInvalidInt
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n, nil
+}
+
+var errInvalidInt = &intParseError{}
+
+type intParseError struct{}
+
+func (e *intParseError) Error() string { return "invalid integer" }
