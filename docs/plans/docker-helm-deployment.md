@@ -274,19 +274,24 @@ watching `ghcr.io/<owner>/idle-deck` for `main-*`/`v*` tags.
 ## 6. Phased implementation
 
 ### Phase 0 — Prerequisites (blocks everything)
-- [ ] Implement real model-reachability in the remote `/health` (D31 stub
-      currently always true) — required for idle detection to mean anything
-      in-cluster, and it's the liveness proxy target.
-- [ ] Pin the opencode version; verify `npm i -g` works on Ubuntu 24.04
-      the base image.
+- [x] Implement real model-reachability in the remote `/health` (D31 stub
+      currently always true) — `cmd/remote/health.go` drives a real ACP
+      round-trip (initialize → session/new → session/prompt); only a
+      successful generation means reachable, per ADR 0016. Covered by
+      `cmd/remote/health_test.go`.
+- [x] Pin the opencode version; verify `npm i -g` works on Ubuntu 24.04
+      the base image. Pinned to **1.18.35** (the release the ACP runner
+      was verified against; 2.0.x rejects the `--cwd` flag the runner
+      uses). Installed in the builder and only the standalone binary
+      ships to runtime — the image needs no Node.
 
 ### Phase 1 — Docker image + CI (≈1 day)
-- [ ] `Dockerfile` (multi-stage, non-root, both binaries, git + opencode)
-- [ ] CI `docker` job: buildx multi-arch, push on push + tag
-- [ ] Local smoke: `docker build`, `docker run ... idle-deck check` fails
-      without config, succeeds with env; `docker run ... idle-deck run` with
-      the stubs reachable
-- [ ] Tag `v0.1.0`, verify image appears in GHCR
+- [x] `Dockerfile` (multi-stage, non-root, both binaries, git + opencode)
+- [x] CI `docker` job: buildx multi-arch, push on push + tag
+- [x] Local smoke: `docker build`, `docker run ... idle-deck check` fails
+      without config, succeeds with env; `docker run ... idle-deck run`
+      with the stubs reachable
+- [x] Tag `v0.1.0`, verify image appears in GHCR
 
 ### Phase 2 — Helm chart core (≈1–2 days)
 - [ ] Scaffold + templates (namespace, SA, Secret, PVC, 2 Deployments,
