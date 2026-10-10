@@ -67,6 +67,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/tasks", s.handleTasks)
 	s.mux.HandleFunc("/api/heartbeat", s.handleHeartbeat)
 	s.mux.HandleFunc("/api/config", s.handleConfig)
+	s.mux.HandleFunc("/api/actions/poll", s.handleActionPoll)
+	s.mux.HandleFunc("/api/actions/cancel", s.handleActionCancel)
+	s.mux.HandleFunc("/api/actions/retry", s.handleActionRetry)
 
 	s.mux.Handle("/static/", NewStaticHandler("/static/"))
 	s.mux.HandleFunc("/", s.handleIndex)

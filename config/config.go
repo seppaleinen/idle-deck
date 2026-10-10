@@ -65,6 +65,7 @@ const (
 	kindString fieldKind = iota
 	kindInt
 	kindDurationSeconds
+	kindBool
 )
 
 // fieldMeta describes one configuration field: its name, env var, kind, default,
@@ -109,6 +110,7 @@ var fields = []fieldMeta{
 	{name: "SweepRepos", key: "IDLE_DECK_SWEEP_REPOS", kind: kindString, default_: "", flag: "sweep-repos"},
 	{name: "SweepPrompt", key: "IDLE_DECK_SWEEP_PROMPT", kind: kindString, default_: defaultSweepPrompt, flag: "sweep-prompt"},
 	{name: "DashboardAddr", key: "IDLE_DECK_DASHBOARD_ADDR", kind: kindString, default_: "127.0.0.1:8090", flag: "dashboard-addr"},
+	{name: "DashboardActions", key: "IDLE_DECK_DASHBOARD_ACTIONS", kind: kindBool, default_: "false", flag: "dashboard-actions"},
 }
 
 // Config holds the resolved idle-deck configuration.
@@ -140,6 +142,7 @@ type Config struct {
 	SweepRepos          string
 	SweepPrompt         string
 	DashboardAddr       string
+	DashboardActions    bool
 }
 
 // MissingVarError names the required variables that are absent or empty.
@@ -190,6 +193,15 @@ func setField(root reflect.Value, f fieldMeta, raw string) error {
 			return &ParseError{Var: f.key, Kind: "duration", Cause: fmt.Errorf("expected an integer number of seconds, got %q", raw)}
 		}
 		field.SetInt(int64(n) * int64(time.Second))
+	case kindBool:
+		raw = strings.TrimSpace(strings.ToLower(raw))
+		if raw == "" || raw == "0" || raw == "false" || raw == "no" {
+			field.SetBool(false)
+		} else if raw == "1" || raw == "true" || raw == "yes" {
+			field.SetBool(true)
+		} else {
+			return &ParseError{Var: f.key, Kind: "bool", Cause: fmt.Errorf("expected true/false, 1/0, yes/no, got %q", raw)}
+		}
 	default:
 		return fmt.Errorf("config: unknown field kind for %q", f.name)
 	}

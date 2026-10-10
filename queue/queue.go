@@ -2,6 +2,7 @@ package queue
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 )
 
@@ -192,4 +193,6 @@ type Queue interface {
 	GetTask(ctx context.Context, taskID string) (Task, error)
 	// SaveArtifacts persists harness-returned artifacts for an attempt.
 	SaveArtifacts(ctx context.Context, attemptID string, artifacts []Artifact) error
+	// DB returns the underlying database connection for raw queries (e.g., dashboard actions).
+	DB() *sql.DB
 }

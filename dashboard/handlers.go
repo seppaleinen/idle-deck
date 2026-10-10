@@ -11,6 +11,7 @@ import (
 
 	"github.com/seppaleinen/idle-deck/config"
 	"github.com/seppaleinen/idle-deck/queue"
+	"github.com/google/uuid"
 )
 
 type statusResponse struct {
@@ -535,3 +536,109 @@ var errInvalidInt = &intParseError{}
 type intParseError struct{}
 
 func (e *intParseError) Error() string { return "invalid integer" }
+
+// Action payloads
+type actionPollPayload struct {
+	Repo string `json:"repo"`
+}
+
+type actionCancelPayload struct {
+	TaskID string `json:"task_id"`
+}
+
+type actionRetryPayload struct {
+	TaskID string `json:"task_id"`
+}
+
+// handleActionPoll writes a "poll" action to the dashboard_actions table.
+func (s *Server) handleActionPoll(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.respondError(w, r, http.StatusMethodNotAllowed, "POST only")
+		return
+	}
+	if !s.cfg.DashboardActions {
+		s.respondError(w, r, http.StatusForbidden, "dashboard actions disabled (set IDLE_DECK_DASHBOARD_ACTIONS=true)")
+		return
+	}
+	var p actionPollPayload
+	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+		s.respondError(w, r, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	if p.Repo == "" {
+		s.respondError(w, r, http.StatusBadRequest, "repo required")
+		return
+	}
+	actionID := uuid.New().String()
+	now := time.Now().UnixNano()
+	_, err := s.db.ExecContext(r.Context(),
+		`INSERT INTO dashboard_actions (id, kind, payload, status, created_at) VALUES (?, 'poll', ?, 'pending', ?)`,
+		actionID, `{"repo":"`+p.Repo+`"}`, now)
+	if err != nil {
+		s.respondError(w, r, http.StatusInternalServerError, "insert action: "+err.Error())
+		return
+	}
+	s.respondJSON(w, r, http.StatusOK, map[string]string{"action_id": actionID})
+}
+
+// handleActionCancel writes a "cancel" action to the dashboard_actions table.
+func (s *Server) handleActionCancel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.respondError(w, r, http.StatusMethodNotAllowed, "POST only")
+		return
+	}
+	if !s.cfg.DashboardActions {
+		s.respondError(w, r, http.StatusForbidden, "dashboard actions disabled (set IDLE_DECK_DASHBOARD_ACTIONS=true)")
+		return
+	}
+	var p actionCancelPayload
+	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+		s.respondError(w, r, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	if p.TaskID == "" {
+		s.respondError(w, r, http.StatusBadRequest, "task_id required")
+		return
+	}
+	actionID := uuid.New().String()
+	now := time.Now().UnixNano()
+	_, err := s.db.ExecContext(r.Context(),
+		`INSERT INTO dashboard_actions (id, kind, payload, status, created_at) VALUES (?, 'cancel', ?, 'pending', ?)`,
+		actionID, `{"task_id":"`+p.TaskID+`"}`, now)
+	if err != nil {
+		s.respondError(w, r, http.StatusInternalServerError, "insert action: "+err.Error())
+		return
+	}
+	s.respondJSON(w, r, http.StatusOK, map[string]string{"action_id": actionID})
+}
+
+// handleActionRetry writes a "retry" action to the dashboard_actions table.
+func (s *Server) handleActionRetry(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.respondError(w, r, http.StatusMethodNotAllowed, "POST only")
+		return
+	}
+	if !s.cfg.DashboardActions {
+		s.respondError(w, r, http.StatusForbidden, "dashboard actions disabled (set IDLE_DECK_DASHBOARD_ACTIONS=true)")
+		return
+	}
+	var p actionRetryPayload
+	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+		s.respondError(w, r, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	if p.TaskID == "" {
+		s.respondError(w, r, http.StatusBadRequest, "task_id required")
+		return
+	}
+	actionID := uuid.New().String()
+	now := time.Now().UnixNano()
+	_, err := s.db.ExecContext(r.Context(),
+		`INSERT INTO dashboard_actions (id, kind, payload, status, created_at) VALUES (?, 'retry', ?, 'pending', ?)`,
+		actionID, `{"task_id":"`+p.TaskID+`"}`, now)
+	if err != nil {
+		s.respondError(w, r, http.StatusInternalServerError, "insert action: "+err.Error())
+		return
+	}
+	s.respondJSON(w, r, http.StatusOK, map[string]string{"action_id": actionID})
+}

@@ -30,6 +30,7 @@ type FlagOverrides struct {
 	SweepRepos          *string
 	SweepPrompt         *string
 	DashboardAddr       *string
+	DashboardActions    *string
 }
 
 func RegisterFlags(fs *flag.FlagSet) *FlagOverrides {
@@ -57,6 +58,7 @@ func RegisterFlags(fs *flag.FlagSet) *FlagOverrides {
 	fo.SweepRepos = fs.String("sweep-repos", "", "Comma-separated sweep repo subset (env IDLE_DECK_SWEEP_REPOS)")
 	fo.SweepPrompt = fs.String("sweep-prompt", "", "Sweep prompt (env IDLE_DECK_SWEEP_PROMPT)")
 	fo.DashboardAddr = fs.String("dashboard-addr", "", "Dashboard listen address (env IDLE_DECK_DASHBOARD_ADDR)")
+	fo.DashboardActions = fs.String("dashboard-actions", "", "Enable dashboard actions (env IDLE_DECK_DASHBOARD_ACTIONS)")
 
 	return fo
 }

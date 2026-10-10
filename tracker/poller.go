@@ -78,6 +78,10 @@ func (p *Poller) Tick(ctx context.Context) error {
 			return fmt.Errorf("watermark save: %w", err)
 		}
 	}
+	// Process any dashboard actions queued since last tick.
+	if err := p.ProcessDashboardActions(ctx); err != nil {
+		return fmt.Errorf("process dashboard actions: %w", err)
+	}
 	return nil
 }
 
@@ -347,4 +351,182 @@ func (g *GitHub) postIssue(ctx context.Context, repo, title, body string, labels
 
 func (g *GitHub) httpClient() *http.Client {
 	return &http.Client{Timeout: 30 * time.Second}
+}
+
+// ProcessDashboardActions checks the dashboard_actions table for pending
+// actions and executes them. Actions are:
+// - poll: trigger a poll for a specific repo
+// - cancel: cancel a running task (mark as escalated)
+// - retry: re-enqueue a failed/succeeded task for another attempt
+func (p *Poller) ProcessDashboardActions(ctx context.Context) error {
+	db := p.q.DB()
+	if db == nil {
+		return nil
+	}
+
+	// Fetch pending actions (limit to 10 per tick to avoid long processing).
+	rows, err := db.QueryContext(ctx, `
+		SELECT id, kind, payload FROM dashboard_actions
+		WHERE status = 'pending'
+		ORDER BY created_at ASC
+		LIMIT 10
+	`)
+	if err != nil {
+		return fmt.Errorf("query actions: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var actionID, kind, payload string
+		if err := rows.Scan(&actionID, &kind, &payload); err != nil {
+			continue
+		}
+
+		// Mark as started
+		now := p.now().UnixNano()
+		_, _ = db.ExecContext(ctx, `
+			UPDATE dashboard_actions SET status = 'running', started_at = ? WHERE id = ?
+		`, now, actionID)
+
+		var actErr error
+		switch kind {
+		case "poll":
+			actErr = p.processActionPoll(ctx, payload)
+		case "cancel":
+			actErr = p.processActionCancel(ctx, payload)
+		case "retry":
+			actErr = p.processActionRetry(ctx, payload)
+		default:
+			actErr = fmt.Errorf("unknown action kind: %s", kind)
+		}
+
+		finishedAt := p.now().UnixNano()
+		if actErr != nil {
+			_, _ = db.ExecContext(ctx, `
+				UPDATE dashboard_actions SET status = 'failed', finished_at = ?, error = ? WHERE id = ?
+			`, finishedAt, actErr.Error(), actionID)
+		} else {
+			_, _ = db.ExecContext(ctx, `
+				UPDATE dashboard_actions SET status = 'completed', finished_at = ? WHERE id = ?
+			`, finishedAt, actionID)
+		}
+	}
+	return nil
+}
+
+func (p *Poller) processActionPoll(ctx context.Context, payload string) error {
+	var pld struct{ Repo string }
+	if err := json.Unmarshal([]byte(payload), &pld); err != nil {
+		return err
+	}
+	if pld.Repo == "" {
+		return fmt.Errorf("poll action: repo required")
+	}
+	// Verify the repo is in our allowlist
+	found := false
+	for _, r := range p.repos {
+		if r == pld.Repo {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("poll action: repo %s not in allowlist", pld.Repo)
+	}
+	// Trigger a poll for this repo by running pollRepo with a far-past watermark
+	// to catch any new issues since the last actual poll.
+	tickStart := p.now()
+	if err := p.pollRepo(ctx, pld.Repo, tickStart.Add(-24*time.Hour)); err != nil {
+		return fmt.Errorf("poll action: %w", err)
+	}
+	return nil
+}
+
+func (p *Poller) processActionCancel(ctx context.Context, payload string) error {
+	var pld struct{ TaskID string }
+	if err := json.Unmarshal([]byte(payload), &pld); err != nil {
+		return err
+	}
+	if pld.TaskID == "" {
+		return fmt.Errorf("cancel action: task_id required")
+	}
+	// The queue doesn't have a direct cancel; we can mark the task as escalated
+	// by updating its state, or we can rely on the worker's Abort.
+	// For simplicity, mark the task state as 'escalated' which will cause
+	// the worker to stop it on the next check.
+	_, err := p.q.DB().ExecContext(ctx, `
+		UPDATE tasks SET state = 'escalated' WHERE id = ? AND state = 'running'
+	`, pld.TaskID)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (p *Poller) processActionRetry(ctx context.Context, payload string) error {
+	var pld struct{ TaskID string }
+	if err := json.Unmarshal([]byte(payload), &pld); err != nil {
+		return err
+	}
+	if pld.TaskID == "" {
+		return fmt.Errorf("retry action: task_id required")
+	}
+	// Re-enqueue the task by inserting a new attempt with incremented ordinal.
+	// First, get the task details and current attempt count.
+	var tier, prompt string
+	var timeoutSecs, budget int
+	var repoID, ticketTracker, ticketRepoID, ticketExternalID, ticketURL, eventType, dedupeKey string
+	var triggeredByEventType, triggeredByDedupeKey string
+	var triggeredByReceivedAt int64
+	err := p.q.DB().QueryRowContext(ctx, `
+		SELECT t.tier, t.prompt, t.timeout_seconds, t.budget, t.repository_id,
+		       t.ticket_tracker, t.ticket_repo_id, t.ticket_external_id, t.ticket_url,
+		       t.event_type, t.dedupe_key, t.triggered_by_event_type, t.triggered_by_dedupe_key, t.triggered_by_received_at
+		FROM tasks t WHERE t.id = ?
+	`, pld.TaskID).Scan(&tier, &prompt, &timeoutSecs, &budget, &repoID,
+		&ticketTracker, &ticketRepoID, &ticketExternalID, &ticketURL,
+		&eventType, &dedupeKey, &triggeredByEventType, &triggeredByDedupeKey, &triggeredByReceivedAt)
+	if err != nil {
+		return fmt.Errorf("retry action: task not found: %w", err)
+	}
+
+	// Get current attempt count
+	var attemptCount int
+	_ = p.q.DB().QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM attempts WHERE task_id = ?
+	`, pld.TaskID).Scan(&attemptCount)
+
+	// Create new task with new ID but same properties, increment ordinal in attempt
+	newTaskID := pld.TaskID + "-retry-" + fmt.Sprintf("%d", attemptCount+1)
+	now := p.now().UnixNano()
+	_, err = p.q.DB().ExecContext(ctx, `
+		INSERT INTO tasks (id, repository_id, ticket_tracker, ticket_repo_id, ticket_external_id, ticket_url,
+			tier, prompt, timeout_seconds, budget, state, event_type, dedupe_key, received_at, created_at,
+			triggered_by_event_type, triggered_by_dedupe_key, triggered_by_received_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?)
+	`, newTaskID, repoID, ticketTracker, ticketRepoID, ticketExternalID, ticketURL,
+		tier, prompt, timeoutSecs, budget, eventType, dedupeKey, now, now,
+		triggeredByEventType, triggeredByDedupeKey, triggeredByReceivedAt)
+	if err != nil {
+		return fmt.Errorf("retry action: insert task: %w", err)
+	}
+
+	// Enqueue the new task
+	task := queue.Task{
+		ID:             newTaskID,
+		RepositoryID:   repoID,
+		Ticket:         queue.TrackerRef{Tracker: ticketTracker, RepositoryID: ticketRepoID, ExternalID: ticketExternalID, URL: ticketURL},
+		Tier:           queue.TaskTier(tier),
+		Prompt:         prompt,
+		State:          queue.StateQueued,
+		TimeoutSeconds: timeoutSecs,
+		Budget:         budget,
+		TriggeredBy: queue.TriggeredBy{
+			EventType:  eventType,
+			DedupeKey:  dedupeKey,
+			ReceivedAt: now,
+		},
+		CreatedAt: now,
+	}
+	return p.q.Enqueue(ctx, task)
 }
