@@ -104,6 +104,22 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		errorJSON(w, http.StatusBadRequest, "bad_request", "attempt_id required")
 	}
 
+	// Idempotency: if this attempt_id already has a run, return it with 200
+	// instead of creating a duplicate (C1). The contract says Start is
+	// idempotent by attempt_id, so a duplicate is a success, not an error.
+	s.mu.Lock()
+	if existing, ok := s.AttemptMap[req.AttemptID]; ok {
+		run := s.Runs[existing]
+		s.mu.Unlock()
+		if run == nil {
+			errorJSON(w, http.StatusInternalServerError, "internal_error", "attempt map references missing run")
+			return
+		}
+		marshalJSON(w, http.StatusOK, runResponse{Status: string(run.Status), RunID: run.ID})
+		return
+	}
+	s.mu.Unlock()
+
 	// Prepare the workspace before starting the run.
 	workspace, err := s.Config.WorkspaceManager.PrepareWorkspace(toWorkspace(req.Repository), req.AttemptID)
 	if err != nil {
