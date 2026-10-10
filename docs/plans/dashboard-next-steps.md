@@ -12,12 +12,15 @@ Three work items, in priority order:
 1. **`/api/tasks` endpoint** — full task listing with pagination and filters.
    The dashboard currently shows only aggregate counts and recent attempts;
    an operator troubleshooting a specific task needs to find it.
+   ✅ **DONE** (commit 1d2d187)
 2. **Dashboard actions** — trigger a poll, cancel a running task, retry a
    failed task. These are HTTP endpoints that proxy to the daemon's existing
    seams (tracker poller, queue, worker). Read-only MVP stays intact; actions
    are opt-in and gated behind a flag.
+   ✅ **DONE** (commit 98a4e81)
 3. **Dashboard docs in `GETTING-STARTED.md`** — screenshots, example output,
    and a note that `serve` is a fourth CLI command (D33 surface grows).
+   📝 **PENDING**
 
 ## 2. Work Items in Execution Order
 
@@ -32,13 +35,18 @@ Three work items, in priority order:
 - Empty queue returns `[]`, never `null`.
 - Invalid `state`/`tier` returns `400`.
 
+✅ **IMPLEMENTED**: `dashboard/handlers.go` `handleTasks`, `dashboard/server.go` route, test `TestServer_Tasks`.
+
 ### 2.2 Dashboard actions
 
 **Files:**
 - `dashboard/server.go` — add `ActionHandler` field, wire `/api/actions/*`
 - `dashboard/handlers.go` — add `handleActionPoll`, `handleActionCancel`,
   `handleActionRetry`
-- `cmd/idle-deck/main.go` — pass an action bus to the dashboard server
+- `tracker/poller.go` — add `ProcessDashboardActions` called from `Tick`
+- `store/store.go` — schema v7 adds `dashboard_actions` table
+- `queue/queue.go` — add `DB() *sql.DB` to interface
+- `config/config.go`, `config/flags.go` — add `DashboardActions` bool
 
 **Done-when:**
 - `POST /api/actions/poll` with `{"repo":"owner/repo"}` triggers one poll tick.
@@ -48,6 +56,12 @@ Three work items, in priority order:
   lightweight HTTP bridge or a shared channel). If the daemon is down, the
   action returns `503`.
 - Actions are **disabled by default**; enabled via `IDLE_DECK_DASHBOARD_ACTIONS=1`.
+
+✅ **IMPLEMENTED**:
+- Dashboard writes to `dashboard_actions` table (pending→running→completed/failed)
+- Poller processes actions on each tick via `ProcessDashboardActions`
+- Actions: poll (triggers pollRepo), cancel (marks task escalated), retry (re-enqueues task)
+- Queue interface extended with `DB() *sql.DB`
 
 ### 2.3 Dashboard docs
 
@@ -59,6 +73,8 @@ Three work items, in priority order:
   change it, and what each panel shows.
 - Notes that `serve` is a fourth CLI command (D33 surface grows by one).
 - Includes a note that actions are opt-in and disabled by default.
+
+📝 **PENDING**
 
 ## 3. Out of Scope
 
