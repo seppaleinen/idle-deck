@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/seppaleinen/idle-deck/config"
+	"github.com/seppaleinen/idle-deck/dashboard"
 	"github.com/seppaleinen/idle-deck/harness"
 	"github.com/seppaleinen/idle-deck/idle"
 	"github.com/seppaleinen/idle-deck/queue"
@@ -43,6 +44,8 @@ func main() {
 		os.Exit(runRun(os.Args[2:]))
 	case "status":
 		os.Exit(runStatus(os.Args[2:]))
+	case "serve":
+		os.Exit(runServe(os.Args[2:]))
 	default:
 		usage()
 		os.Exit(2)
@@ -55,6 +58,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  check   validate configuration and connectivity")
 	fmt.Fprintln(os.Stderr, "  run     run the daemon in the foreground")
 	fmt.Fprintln(os.Stderr, "  status  report what the daemon is doing")
+	fmt.Fprintln(os.Stderr, "  serve   run the read-only dashboard")
 	fmt.Fprintln(os.Stderr, "  --version  print the version")
 }
 
@@ -66,21 +70,17 @@ func runCheck(args []string) int {
 		return 2
 	}
 	ctx := context.Background()
-	cfg, err := config.Load(flags)
+	cfg, err := config.LoadRelaxed(flags)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
 
-	// Step 1: required variables present and non-empty (printing the name,
-	// never the value — D36).
 	if missing := cfg.MissingRequired(); len(missing) > 0 {
 		fmt.Fprintf(os.Stderr, "missing required configuration variables: %s\n", strings.Join(missing, ", "))
 		return 1
 	}
 
-	// Step 2: one authenticated read against the tracker — confirms the PAT
-	// is valid and has Issues read access (operator-surface §5).
 	repos, err := config.ParseRepos(cfg.Repos)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "parse repos: %v\n", err)
@@ -93,9 +93,6 @@ func runCheck(args []string) int {
 	}
 	fmt.Println("tracker: authenticated read OK")
 
-	// Step 3: one GET /health against the harness — confirms URL and bearer
-	// token (operator-surface §5). The harness /health must report
-	// reachability, not process liveness (D31).
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, cfg.HarnessURL+"/v1/health", nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "harness health: %v\n", err)
@@ -115,8 +112,6 @@ func runCheck(args []string) int {
 	}
 	fmt.Println("harness: /health reachable")
 
-	// Step 4: SQLite path writable and schema current (D33: auto-migrations
-	// run forward-only at startup).
 	dbPath := config.ExpandHome(cfg.DB)
 	if err := config.CheckDB(dbPath); err != nil {
 		fmt.Fprintf(os.Stderr, "sqlite: %v\n", err)
@@ -139,9 +134,6 @@ func runCheck(args []string) int {
 	}
 	fmt.Printf("sqlite: schema current (v%d)\n", v)
 
-	// Step 5: which of the four D29 labels exist in each configured repository;
-	// for any missing, the exact `gh label create` command (operator-surface
-	// §5, D39). Colours are documented as a suggested palette, never applied.
 	type labelDef struct {
 		name  string
 		color string
@@ -170,8 +162,6 @@ func runCheck(args []string) int {
 		}
 	}
 
-	// Step 6: resolved configuration with secrets redacted, non-secret values
-	// shown at their defaults (operator-surface §5, D36).
 	fmt.Println("\nConfiguration:")
 	fmt.Print(config.Format(config.Redact(cfg)))
 	return 0
@@ -184,13 +174,12 @@ func runRun(args []string) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	cfg, err := config.Load(flags)
+	cfg, err := config.LoadRelaxed(flags)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
 
-	// Create logger (JSON or text per config).
 	var handler slog.Handler
 	logLevel := slog.LevelInfo
 	switch cfg.LogLevel {
@@ -208,48 +197,35 @@ func runRun(args []string) int {
 	}
 	log := slog.New(handler)
 
-	// Parse repos.
 	repos, err := config.ParseRepos(cfg.Repos)
 	if err != nil {
 		log.Error("parse repos", "err", err)
 		return 1
 	}
 
-	// Parse sweep repos (narrowing subset of the allowlist; empty = all).
 	sweepRepos, err := config.ParseRepos(cfg.SweepRepos)
 	if err != nil {
 		log.Error("parse sweep repos", "err", err)
 		return 1
 	}
 
-	// Create SQLite queue with maxAttempts=3 (D14: 2 retries + 1 initial).
 	dbPath := config.ExpandHome(cfg.DB)
 	q := store.NewSQLiteQueue(dbPath, store.WithMaxAttempts(3))
 
-	// Create watermarks store.
 	wm := store.NewSQLiteWatermarks(q.DB())
 
-	// Create heartbeat store (operator-surface §6): liveness + run lock.
 	hb := store.NewSQLiteHeartbeat(q.DB())
 
-	// Create tracker.
 	trk := tracker.NewGitHub(cfg.GitHubAPI, cfg.GitHubToken, repos, wm)
 
-	// Create harness.
 	h := harness.NewRemoteHarness(cfg.HarnessURL, cfg.HarnessToken)
 
-	// Create idle policy.
 	idlePolicy := idle.NewHarnessIdlePolicy(cfg.HarnessURL, cfg.HarnessToken)
 
-	// Start poller goroutine.
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	// Release the run lock on any exit path (clean or not). Use a fresh
-	// context: ctx is already cancelled by the time this defer runs.
 	defer func() { _ = hb.ReleaseRunLock(context.Background()) }()
 
-	// Claim the run lock: the daemon is the active run holder.
-	// TakeRunLock returns (acquired, err): acquired=true means we now hold it.
 	if acquired, err := hb.TakeRunLock(ctx); err != nil {
 		log.Error("take run lock", "err", err)
 		return 1
@@ -277,12 +253,10 @@ func runRun(args []string) int {
 					log.Error("poll tick failed", "err", err)
 					continue
 				}
-				// Beat on every successful poll tick (operator-surface §6).
 				_ = hb.Beat(ctx, time.Now())
 				for _, repo := range repos {
 					_ = hb.SavePoll(ctx, repo, time.Now())
 				}
-				// P3 sweep: enqueue sweep tasks for the configured sweep repos.
 				if err := poller.Sweep(ctx); err != nil {
 					log.Error("sweep enqueue failed", "err", err)
 				}
@@ -290,7 +264,6 @@ func runRun(args []string) int {
 		}
 	}()
 
-	// Create and run worker.
 	w := worker.NewWorker(q, h, trk, idlePolicy, cfg.MaxConcurrent, cfg.RetryBackoffInitial, cfg.RetryBackoffMax, log)
 	if err := w.Run(ctx); err != nil {
 		log.Error("worker exited", "err", err)
@@ -301,7 +274,6 @@ func runRun(args []string) int {
 
 func runStatus(args []string) int {
 	fs := flag.NewFlagSet("idle-deck status", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
 	dbFlag := fs.String("db", "", "SQLite database path (env IDLE_DECK_DB)")
 	harnessURLFlag := fs.String("harness-url", "", "Remote execution service base URL (env IDLE_DECK_HARNESS_URL)")
 	harnessTokenFlag := fs.String("harness-token", "", "Bearer token for harness (env IDLE_DECK_HARNESS_TOKEN)")
@@ -309,8 +281,6 @@ func runStatus(args []string) int {
 		return 2
 	}
 
-	// Relaxed config load: defaults + --db flag override, skip Validate().
-	// Also read optional env vars for status (HarnessURL, HarnessToken).
 	cfg := config.Defaults()
 	if v := os.Getenv("IDLE_DECK_DB"); v != "" {
 		cfg.DB = v
@@ -318,14 +288,12 @@ func runStatus(args []string) int {
 	if *dbFlag != "" {
 		cfg.DB = *dbFlag
 	}
-	// Apply env vars for optional fields (HarnessURL, HarnessToken).
 	if v := os.Getenv("IDLE_DECK_HARNESS_URL"); v != "" {
 		cfg.HarnessURL = v
 	}
 	if v := os.Getenv("IDLE_DECK_HARNESS_TOKEN"); v != "" {
 		cfg.HarnessToken = v
 	}
-	// Apply flag overrides for optional fields.
 	if *harnessURLFlag != "" {
 		cfg.HarnessURL = *harnessURLFlag
 	}
@@ -334,7 +302,6 @@ func runStatus(args []string) int {
 	}
 	dbPath := config.ExpandHome(cfg.DB)
 
-	// Check if DB file exists.
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
 		fmt.Println("idle-deck status")
 		fmt.Println("================")
@@ -345,7 +312,6 @@ func runStatus(args []string) int {
 		return 1
 	}
 
-	// Open DB read-only.
 	db, err := sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(5000)&_pragma=journal_mode=WAL")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "status: open DB: %v\n", err)
@@ -357,9 +323,6 @@ func runStatus(args []string) int {
 	fmt.Println("idle-deck status")
 	fmt.Println("================")
 
-	// 1. Heartbeat age + run lock (operator-surface §6).
-	// A heartbeat older than three poll intervals is stale: the daemon is up
-	// but not ingesting, and looks exactly like a healthy one without it.
 	beat, err := hb.LastBeat(context.Background())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "status: heartbeat: %v\n", err)
@@ -390,7 +353,6 @@ func runStatus(args []string) int {
 		fmt.Println("Run lock: free")
 	}
 
-	// 2. Queue depth by tier and state.
 	fmt.Println("\nQueue depth:")
 	rows, err := db.QueryContext(context.Background(), `SELECT state, tier, COUNT(*) FROM tasks GROUP BY state, tier ORDER BY state, tier`)
 	if err != nil {
@@ -405,9 +367,6 @@ func runStatus(args []string) int {
 		fmt.Printf("  %s %s: %d\n", state, tier, count)
 	}
 
-	// 3. Last successful poll per repo + watermark (operator-surface §6).
-	// The last-poll-plus-watermark pair is what tells an operator whether
-	// ingestion is silently stuck (operator-surface §6).
 	fmt.Println("\nPolls and watermarks:")
 	rows2, err := db.QueryContext(context.Background(), `SELECT repo, watermark, updated_at FROM tracker_watermarks ORDER BY repo`)
 	if err != nil {
@@ -432,7 +391,6 @@ func runStatus(args []string) int {
 		_ = updatedAt
 	}
 
-	// 4. Active task.
 	fmt.Println("\nActive task:")
 	row := db.QueryRowContext(context.Background(), `
 		SELECT t.id, t.tier, a.id, a.started_at
@@ -457,8 +415,6 @@ func runStatus(args []string) int {
 		return 1
 	}
 
-	// 5. Harness reachability, and the outcome of the most recent call
-	// (operator-surface §6).
 	fmt.Println("\nHarness:")
 	if cfg.HarnessURL != "" {
 		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, cfg.HarnessURL+"/v1/health", nil)
@@ -480,7 +436,6 @@ func runStatus(args []string) int {
 		fmt.Println("  Reachability: not configured (IDLE_DECK_HARNESS_URL not set)")
 	}
 
-	// 6. Most recent escalation.
 	fmt.Println("\nMost recent escalation:")
 	row2 := db.QueryRowContext(context.Background(), `
 		SELECT t.id, t.tier, MAX(a.finished_at)
@@ -504,5 +459,30 @@ func runStatus(args []string) int {
 		return 1
 	}
 
+	return 0
+}
+
+func runServe(args []string) int {
+	fs := flag.NewFlagSet("idle-deck serve", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	flags := config.RegisterFlags(fs)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	cfg, err := config.LoadRelaxed(flags)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	srv, err := dashboard.NewServer(cfg)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	defer srv.Close()
+	if err := srv.ListenAndServe(); err != nil {
+		fmt.Fprintln(os.Stderr, "serve: ", err)
+		return 1
+	}
 	return 0
 }

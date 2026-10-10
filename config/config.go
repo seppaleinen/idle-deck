@@ -108,6 +108,7 @@ var fields = []fieldMeta{
 	{name: "SweepPeriod", key: "IDLE_DECK_SWEEP_PERIOD", kind: kindDurationSeconds, default_: "604800", flag: "sweep-period"},
 	{name: "SweepRepos", key: "IDLE_DECK_SWEEP_REPOS", kind: kindString, default_: "", flag: "sweep-repos"},
 	{name: "SweepPrompt", key: "IDLE_DECK_SWEEP_PROMPT", kind: kindString, default_: defaultSweepPrompt, flag: "sweep-prompt"},
+	{name: "DashboardAddr", key: "IDLE_DECK_DASHBOARD_ADDR", kind: kindString, default_: "127.0.0.1:8090", flag: "dashboard-addr"},
 }
 
 // Config holds the resolved idle-deck configuration.
@@ -138,6 +139,7 @@ type Config struct {
 	SweepPeriod         time.Duration
 	SweepRepos          string
 	SweepPrompt         string
+	DashboardAddr       string
 }
 
 // MissingVarError names the required variables that are absent or empty.
@@ -229,6 +231,10 @@ func fromEnvNoValidate() (Config, error) {
 // Load builds a Config with precedence: defaults → env → flags (via flag.Visit).
 // Missing required variables or validation failures are returned as errors.
 func Load(fo *FlagOverrides) (Config, error) {
+	// Relaxed load without full validation. Used by read-only tools like status/serve.
+	// It builds config from defaults then env then flags, but does not enforce required variables.
+	// The LoadRelaxed helper is exported for use by tools that only need a subset of config.
+	//t// See config/LoadRelaxed for implementation.n
 	c, err := fromEnvNoValidate()
 	if err != nil {
 		return Config{}, err

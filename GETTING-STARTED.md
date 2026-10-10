@@ -71,6 +71,65 @@ make dev
 
 `make dev` starts the stubs and the daemon together. `make test` runs the suite.
 
+## Running with a real harness (remote wrapper)
+
+To use a real agent (e.g., opencode) as the harness, you need to run the remote wrapper server that executes the agent and speaks idle-deck's wire contract.
+
+### Build the remote server
+
+```bash
+go build -o idle-deck-remote ./cmd/remote/
+```
+
+### Configure and run the remote server
+
+Set the following environment variables:
+
+| Variable | Purpose |
+|---|---|
+| `IDLE_DECK_REMOTE_BARE_DIR` | Directory for bare repo cache (e.g. `/tmp/idle-deck-bare`) |
+| `IDLE_DECK_REMOTE_BASE_DIR` | Directory for worktrees (e.g. `/tmp/idle-deck-work`) |
+| `IDLE_DECK_REMOTE_GIT_TOKEN` | **Repo-scoped** personal access token for git operations (push, PR creation). Needs `Contents: Read and write` + `Metadata: Read-only`. |
+| `IDLE_DECK_REMOTE_HTTP_TOKEN` | Bearer token for the HTTP server (must match what idle-deck sends). For local dev you can set any non-empty string. |
+| `IDLE_DECK_REMOTE_ROLE_TO_MODEL` | JSON mapping of role to model name, e.g. `'{"plan":"opencode/big-pickle","do":"opencode/big-pickle","sweep":"opencode/big-pickle"}'` |
+
+Then start the server:
+
+```bash
+IDLE_DECK_REMOTE_BARE_DIR=/tmp/idle-deck-bare \
+IDLE_DECK_REMOTE_BASE_DIR=/tmp/idle-deck-work \
+IDLE_DECK_REMOTE_GIT_TOKEN=ghp_... \
+IDLE_DECK_REMOTE_HTTP_TOKEN=secret123 \
+IDLE_DECK_REMOTE_ROLE_TO_MODEL='{"plan":"opencode/big-pickle","do":"opencode/big-pickle","sweep":"opencode/big-pickle"}' \
+./idle-deck-remote
+```
+
+The server will listen on the address specified by `IDLE_DECK_REMOTE_LISTEN_ADDR` (default `:8080`).
+
+### Configure idle-deck to point to the real harness
+
+Set `IDLE_DECK_HARNESS_URL` to the server's base URL (e.g. `http://127.0.0.1:8080`) and `IDLE_DECK_HARNESS_TOKEN` to the HTTP token you set above.
+
+Example full environment for a local test with a real opencode agent:
+
+```bash
+IDLE_DECK_POLL_INTERVAL=10s \
+IDLE_DECK_REPOS=yourname/yourrepo \
+IDLE_DECK_GITHUB_TOKEN=ghp_... # fine-grained PAT for issues/comments \
+IDLE_DECK_HARNESS_URL=http://127.0.0.1:8080 \
+IDLE_DECK_HARNESS_TOKEN=secret123 \
+IDLE_DECK_REMOTE_BARE_DIR=/tmp/idle-deck-bare \
+IDLE_DECK_REMOTE_BASE_DIR=/tmp/idle-deck-work \
+IDLE_DECK_REMOTE_GIT_TOKEN=ghp_... # repo-scoped PAT for git \
+IDLE_DECK_REMOTE_HTTP_TOKEN=secret123 \
+IDLE_DECK_REMOTE_ROLE_TO_MODEL='{"plan":"opencode/big-pickle","do":"opencode/big-pickle","sweep":"opencode/big-pickle"}' \
+IDLE_DECK_DB=/tmp/idle-deck-real.db \
+idle-deck run
+```
+
+> **Note**: The remote server requires a working opencode installation (`opencode` on PATH) and a gitHub token with repo scope for git operations. The `IDLE_DECK_GITHUB_TOKEN` is still needed for idle-deck's own issue/comment traffic.
+
+
 ## Supervised (launchd)
 
 ```bash

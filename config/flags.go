@@ -5,9 +5,6 @@ import (
 	"reflect"
 )
 
-// FlagOverrides holds the parsed CLI flags.
-// Only non-secret, per-run tunables get flags (D36: tokens are env-only).
-// Each field is a pointer to the flag's value; nil pointer = flag not registered.
 type FlagOverrides struct {
 	fs *flag.FlagSet
 
@@ -32,11 +29,9 @@ type FlagOverrides struct {
 	SweepPeriod         *string
 	SweepRepos          *string
 	SweepPrompt         *string
+	DashboardAddr       *string
 }
 
-// RegisterFlags registers all non-secret CLI flags on fs with zero defaults
-// (empty string = not set). It returns the overrides bound to fs.
-// Tokens are env-only per D36: flag values leak in `ps`.
 func RegisterFlags(fs *flag.FlagSet) *FlagOverrides {
 	fo := &FlagOverrides{fs: fs}
 
@@ -61,13 +56,11 @@ func RegisterFlags(fs *flag.FlagSet) *FlagOverrides {
 	fo.SweepPeriod = fs.String("sweep-period", "", "Sweep period in seconds; 0 disables (env IDLE_DECK_SWEEP_PERIOD)")
 	fo.SweepRepos = fs.String("sweep-repos", "", "Comma-separated sweep repo subset (env IDLE_DECK_SWEEP_REPOS)")
 	fo.SweepPrompt = fs.String("sweep-prompt", "", "Sweep prompt (env IDLE_DECK_SWEEP_PROMPT)")
+	fo.DashboardAddr = fs.String("dashboard-addr", "", "Dashboard listen address (env IDLE_DECK_DASHBOARD_ADDR)")
 
 	return fo
 }
 
-// ApplyFlags applies explicitly-set flags from fo to cfg.
-// It uses flag.Visit to distinguish explicitly-set flags from implicit zero-defaults
-// (zero-default flags mean "not set", so they don't override env/defaults).
 func ApplyFlags(cfg *Config, fo *FlagOverrides) error {
 	if fo == nil || fo.fs == nil {
 		return nil

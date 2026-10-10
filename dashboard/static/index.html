@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>idle-deck dashboard</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1>idle-deck <span class="muted">dashboard</span></h1>
+  <div class="header-meta" id="header-meta">loading…</div>
+</header>
+
+<main>
+  <section class="card" id="heartbeat-card">
+    <h2>Heartbeat</h2>
+    <div id="heartbeat" class="row">—</div>
+  </section>
+
+  <section class="card" id="harness-card">
+    <h2>Harness <span class="muted">(remote execution service)</span></h2>
+    <div id="harness" class="row">—</div>
+  </section>
+
+  <section class="card" id="repos-card">
+    <h2>Repositories</h2>
+    <table id="repos">
+      <thead><tr><th>Repo</th><th>Watermark</th><th>Last poll</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section class="card" id="queue-card">
+    <h2>Queue</h2>
+    <div id="queue-total" class="row">—</div>
+    <table id="queue">
+      <thead><tr><th>State</th><th>Tier</th><th>Count</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section class="card" id="active-card">
+    <h2>Active task</h2>
+    <div id="active" class="row">none</div>
+  </section>
+
+  <section class="card" id="attempts-card">
+    <h2>Recent attempts</h2>
+    <table id="attempts">
+      <thead><tr><th>Task</th><th>Tier</th><th>#</th><th>Outcome</th><th>Started</th><th>Finished</th><th>Ticket</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section class="card" id="artifacts-card">
+    <h2>Recent artifacts</h2>
+    <table id="artifacts">
+      <thead><tr><th>Kind</th><th>Purpose</th><th>URI</th><th>Produced</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section class="card" id="config-card">
+    <h2>Configuration <span class="muted">(redacted)</span></h2>
+    <pre id="config" class="config">—</pre>
+  </section>
+</main>
+
+<footer>
+  <span id="updated">—</span>
+</footer>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
