@@ -41,8 +41,9 @@ import (
 type ACPConfig struct {
 	// Bin is the agent binary (e.g. "opencode").
 	Bin string
-	// Args are the ACP server args (e.g. ["acp", "--cwd", <dir>]). The
-	// workspace dir is substituted by the runner.
+	// Args are the ACP server args (e.g. ["acp"]). The workspace dir is set
+	// via cmd.Dir and the session/new cwd param; opencode v2 no longer
+	// accepts --cwd on the command line.
 	Args []string
 	// Env is extra environment for the agent process.
 	Env []string
