@@ -2,18 +2,17 @@
 
 # idle-deck container image (D32: one static cgo-free binary).
 #
-# Multi-stage: the builder compiles both Go binaries and builds
-# opencode v2.0.25 from source; the runtime ships only the artifacts —
-# the two Go binaries, the standalone opencode binary, and the
-# system tools the remote needs (git, gh). Nothing the build needed
-# (Go, Node, apt metadata) survives into the final image.
+# Multi-stage: the builder compiles both Go binaries; the opencode stage
+# extracts the prebuilt agent CLI from its npm platform package; the
+# runtime ships only the artifacts — the two Go binaries, the opencode
+# binary, and the system tools the remote needs (git, gh, ripgrep).
 #
 # CGO_ENABLED=0 is asserted at the build step, not inherited from the
 # environment (ADR 0017 / D32): a dependency that reintroduces cgo would
 # silently break `go install` for users, so the build must not depend on
 # the host's environment being clean.
 
-FROM golang:1.27 AS gobuilder
+FROM golang:1.27 AS builder
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
@@ -21,90 +20,32 @@ COPY . .
 RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/idle-deck . && \
     CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/idle-deck-remote ./cmd/remote
 
-# opencode v2.0.25 built from source (anomalyco/opencode).
-# The source build is required because v2 has no Linux release assets;
-# opencode v2 requires bun/rust/python/zig and a ghostty checkout.
-# The homebrew formula for v2.0.25 is the source of truth for these
-# steps — this stage mirrors that recipe.
-FROM ubuntu:24.04 AS opencode-builder
-ARG OPENCODE_VERSION=2.0.25
+# opencode v2 ships prebuilt native binaries as npm platform packages
+# (@opencode/cli-linux-x64, @opencode/cli-linux-arm64, + musl variants).
+# Extract the one matching TARGETARCH from the tarball — no source build,
+# no Node at runtime. The ACP runner (remote/acp.go) and the health probe
+# (cmd/remote/health.go) are verified against this line: `opencode acp`
+# with no flags, working directory from the process cwd / session/new.
+FROM node:20-slim AS opencode-stage
 ARG TARGETARCH
-
-# Build deps: git, python (3.14), bun, rust, zig, icu4c, ripgrep.
-# ripgrep is a runtime dependency (the agent uses it); the rest are
-# build-only.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        git ca-certificates curl build-essential pkg-config xz-utils \
-        python3 python3-pip libssl-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-# --- python 3.14 via uv (system python is 3.12 on ubuntu:24.04) ---
-RUN curl -fsSL https://astral.sh/uv/install.sh | sh && \
-    ln -sf /root/.cargo/bin/uv /usr/local/bin/uv && \
-    uv python install 3.14 && \
-    ln -sf $(uv python find 3.14) /usr/local/bin/python3
-
-# --- zig 0.16 (needed by opencode-pty build) ---
+ARG OPENCODE_VERSION=2.0.26
 RUN case "$TARGETARCH" in \
-        amd64) ZIG_ARCH=x86_64 ;; \
-        aarch64) ZIG_ARCH=aarch64 ;; \
-        *) echo "unsupported arch $TARGETARCH" && exit 1 ;; \
+        amd64) ARCH=x64 ;; \
+        arm64) ARCH=arm64 ;; \
+        *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
     esac && \
-    curl -fsSL "https://ziglang.org/download/0.16.0/${ZIG_ARCH}-linux-gnu.tar.xz" \
-      | tar -xJ -C /usr/local && \
-    ln -s "/usr/local/zig-linux-${ZIG_ARCH}-0.16.0/zig" /usr/local/bin/zig
-
-# --- rust (opencode-pty build requires cargo) ---
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-    | sh -s -- -y --no-modify-path --profile minimal --default-toolchain stable && \
-    ln -sf /root/.cargo/bin/cargo /usr/local/bin/cargo && \
-    ln -sf /root/.cargo/bin/rustc /usr/local/bin/rustc
-
-# --- bun (opencode cli build) ---
-RUN curl -fsSL https://bun.sh/install | bash -s "bun-v1.2.19" && \
-    ln -sf /root/.bun/bin/bun /usr/local/bin/bun && \
-    ln -sf /root/.bun/bin/bunx /usr/local/bin/bunx
-
-# --- clone opencode v2.0.25 ---
-RUN git clone --depth 1 --branch v${OPENCODE_VERSION} \
-        https://github.com/anomalyco/opencode.git /build/opencode && \
-    cd /build/opencode && \
-    mkdir -p /build/opencode/.yarn-cache
-
-# --- fetch opencode-pty resource (v0.2.0) and build it ---
-RUN git clone --depth 1 --branch v0.2.0 \
-        https://github.com/anomalyco/opencode-pty.git /build/opencode-pty && \
-    cd /build/opencode-pty && \
-    cargo install --root /build/opencode-pty-root --path . && \
-    ls -l /build/opencode-pty-root/bin/opencode-pty
-
-# --- fetch ghostty at pinned revision (required by opencode-pty) ---
-RUN git clone --depth 1 https://github.com/ghostty-org/ghostty.git /build/ghostty && \
-    cd /build/ghostty && \
-    git fetch --depth 1 origin ab0b9da9e88fcb4b0533a1854e84628f663930af && \
-    git checkout ab0b9da9e88fcb4b0533a1854e84628f663930af
-
-# --- set build env vars per homebrew formula ---
-ENV OPENCODE_VERSION=${OPENCODE_VERSION}
-ENV OPENCODE_CHANNEL=latest
-ENV GHOSTTY_SOURCE_DIR=/build/ghostty
-ENV OPENCODE_PTY_BIN=/build/opencode-pty-root/bin/opencode-pty
-
-# --- patch bun build (splitting fix required for bun 1.x) ---
-RUN cd /build/opencode/packages/cli && \
-    sed -i 's/splitting: true/splitting: false/' script/build.ts
-
-# --- install deps and build opencode single binary ---
-RUN cd /build/opencode && \
-    bun install --frozen-lockfile && \
-    cd packages/cli && \
-    bun --bun ./script/build.ts --single --skip-install && \
-    ls -l dist/cli-*/bin/opencode && \
-    cp dist/cli-*/bin/opencode /out/opencode
+    npm pack "@opencode/cli-linux-${ARCH}@${OPENCODE_VERSION}" && \
+    mkdir -p /out && \
+    tar xzf "opencode-cli-linux-${ARCH}-${OPENCODE_VERSION}.tgz" && \
+    cp package/bin/opencode /out/opencode
 
 FROM ubuntu:24.04
-# runtime deps: git (D27), gh (Draft PRs), ripgrep (opencode runtime dep),
-# ca-certificates (TLS), tzdata (logs), curl (health checks).
+# git: the remote owns checkout and worktrees (D27).
+# gh: the remote opens Draft PRs via `gh pr create`.
+# ripgrep: opencode runtime dependency.
+# curl + gpg: installing gh from its apt keyring.
+# ca-certificates: TLS for GitHub + the model provider.
+# tzdata: correct time zone in logs and git.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git ca-certificates tzdata curl gpg ripgrep \
     && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
@@ -113,14 +54,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         > /etc/apt/sources.list.d/github-cli.list \
     && apt-get update && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/* \
-    # The base image ships an `ubuntu` user at uid 1000; remove it and
-    # create the non-root user the image runs as.
+    # The base image ships an `ubuntu` user at uid 1000; the non-root user
+    # the image runs as is uid 1000 per the plan, so the placeholder is
+    # removed first (its home dir is not needed at runtime).
     && userdel --remove ubuntu 2>/dev/null || true \
     && adduser --disabled-password --gecos "" --uid 1000 idle-deck
-
-COPY --from=gobuilder /out/idle-deck /usr/local/bin/idle-deck
-COPY --from=gobuilder /out/idle-deck-remote /usr/local/bin/idle-deck-remote
-COPY --from=opencode-builder /out/opencode /usr/local/bin/opencode
-
+COPY --from=builder /out/idle-deck /usr/local/bin/idle-deck
+COPY --from=builder /out/idle-deck-remote /usr/local/bin/idle-deck-remote
+COPY --from=opencode-stage /out/opencode /usr/local/bin/opencode
 USER idle-deck
 ENTRYPOINT ["idle-deck"]
