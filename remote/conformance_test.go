@@ -202,26 +202,13 @@ func TestConformanceC4_TerminalResultArtifacts(t *testing.T) {
 	}
 }
 
-// TestConformanceC5_429RetryAfter tests the HTTP error mapping: 429 + Retry-After
-func TestConformanceC5_429RetryAfter(t *testing.T) {
-	srv, _ := newTestServer(t)
-
-	// Simulate a 429 response with Retry-After header
-	// This is tested indirectly through the mapping in mapping.go
-	// For now, we just verify the server responds correctly to normal requests
-	code, _ := startRun(t, srv, "a5", "do", "p", 1000, 60)
-	if code != http.StatusCreated {
-		t.Fatalf("start: code=%d", code)
-	}
-}
-
-// TestConformanceC6_401403404 tests that 401/403/404 map to non_retryable_failure.
-func TestConformanceC6_401403404(t *testing.T) {
-	srv, _ := newTestServer(t)
-	if code, _ := getRun(t, srv, "nope"); code != http.StatusNotFound {
-		t.Fatalf("get missing: code=%d, want 404", code)
-	}
-}
+// TestConformanceC5_429RetryAfter, C6_401403404, C7_422BudgetExceeded,
+// C8_UnreachableService, and C9_ClientAbortThenReadResult live in
+// harness/conformance_test.go — they are black-box tests of the adapter
+// (RemoteHarness) against a controllable stub server, which is what
+// §9a's "client-observable" wording requires. The server-level C1–C4
+// below test the real remote.Server with a stub runner, a complementary
+// layer.
 
 // TestHealthModelReachable tests that /health reports reachable when the model is reachable.
 func TestHealthModelReachable(t *testing.T) {
@@ -271,11 +258,11 @@ func newTestServer(t *testing.T) (*Server, *stubRunner) {
 
 // stubRunner implements Runner for testing the server without a real agent.
 type stubRunner struct {
-	mu       sync.Mutex
-	started  int
-	aborted  int
-	results  map[SessionID]RunResult
-	running  map[SessionID]chan struct{}
+	mu      sync.Mutex
+	started int
+	aborted int
+	results map[SessionID]RunResult
+	running map[SessionID]chan struct{}
 }
 
 func newStubRunner() *stubRunner {
