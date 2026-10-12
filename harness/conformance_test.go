@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"testing"
 	"time"
 
-	"github.com/seppaleinen/idle-deck/queue"
 	"github.com/seppaleinen/idle-deck/test/stubs"
 )
 
@@ -256,98 +256,222 @@ func TestConformanceC4_TerminalResultArtifacts(t *testing.T) {
 	t.Logf("C4: artifact types verified OK — branch_purpose only on kind=branch")
 }
 
-// TestConformanceC5_429RetryAfter tests the HTTP error mapping: 429 + Retry-After
-// maps to retryable_failure per remote-contract §7.
+// C5–C9 are black-box: they drive the real RemoteHarness against the stub
+// server's controlled answers (§9a: "Every case is client-observable — a
+// black-box test against a server whose answers the test controls"). The
+// assertions are on what the adapter returns — a *HarnessError carrying the
+// §7-classified outcome — not on the mapping function in isolation.
+
+// harnessOutcomeFromError extracts the §7 outcome from a harness error. It
+// fails the test unless the error is a *HarnessError carrying the expected
+// outcome — i.e. the adapter classified the wire condition, not just errored.
+func harnessOutcomeFromError(t *testing.T, err error, want AttemptOutcome) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("expected an error, got nil")
+	}
+	var he *HarnessError
+	if !errors.As(err, &he) {
+		t.Fatalf("expected *HarnessError with §7 outcome, got %T: %v", err, err)
+	}
+	if got := he.AttemptOutcomeValue(); got != want {
+		t.Fatalf("outcome: got %q, want %q (err: %v)", got, want, err)
+	}
+}
+
+// TestConformanceC5_429RetryAfter tests that a 429 + Retry-After from the
+// server maps to retryable_failure per remote-contract §7 — observed by the
+// adapter, not the mapping function.
 func TestConformanceC5_429RetryAfter(t *testing.T) {
-	// Test the mapping logic directly
-	got := httpErrorOutcome(429)
-	if got != queue.OutcomeRetryableFailure {
-		t.Fatalf("C5 429: got %v, want retryable_failure", got)
+	state := stubs.NewHarnessState("stub-model")
+	server := stubs.NewHarnessServer(state)
+	defer server.Close()
+	h := NewRemoteHarness(server.URL(), "")
+
+	// The server answers 429 with Retry-After on POST /v1/runs.
+	state.SetFail(&stubs.FailConfig{
+		Method:     http.MethodPost,
+		Path:       "/v1/runs",
+		Status:     http.StatusTooManyRequests,
+		Message:    "try again later",
+		RetryAfter: "30",
+	})
+	t.Cleanup(state.ClearFail)
+
+	// Black-box: the adapter sees the 429 and classifies it retryable.
+	_, err := h.Start(context.Background(), startReq("c5"))
+	harnessOutcomeFromError(t, err, OutcomeRetryableFailure)
+
+	// The header is present on the wire (client-observable via raw HTTP).
+	state.ClearFail()
+	state.SetFail(&stubs.FailConfig{
+		Method:     http.MethodPost,
+		Path:       "/v1/runs",
+		Status:     http.StatusTooManyRequests,
+		Message:    "try again later",
+		RetryAfter: "30",
+	})
+	req, _ := http.NewRequest(http.MethodPost, server.URL()+"/v1/runs", bytes.NewReader([]byte(`{}`)))
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		t.Fatalf("C5 header probe: %v", err)
 	}
-	got5 := httpErrorOutcome(500)
-	if got5 != queue.OutcomeRetryableFailure {
-		t.Fatalf("C5 5xx: got %v, want retryable_failure", got5)
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+	if resp.Header.Get("Retry-After") != "30" {
+		t.Fatalf("C5: Retry-After header = %q, want \"30\"", resp.Header.Get("Retry-After"))
 	}
-	t.Logf("C5: HTTP error mapping verified (429→retryable, 5xx→retryable)")
+	t.Logf("C5: 429 + Retry-After → retryable_failure observed by the adapter (§7)")
 }
 
-// TestConformanceC6_401403404 tests that 401/403/404 map to non_retryable_failure.
+// TestConformanceC6_401403404 tests that 401/403/404 on POST /v1/runs map to
+// non_retryable_failure per §7 — configuration or bug; retrying won't fix it.
 func TestConformanceC6_401403404(t *testing.T) {
-	for _, code := range []int{401, 403, 404} {
-		got := httpErrorOutcome(code)
-		if got != queue.OutcomeNonRetryableFailure {
-			t.Fatalf("C6 status=%d: got %v, want non_retryable_failure", code, got)
-		}
+	state := stubs.NewHarnessState("stub-model")
+	server := stubs.NewHarnessServer(state)
+	defer server.Close()
+	h := NewRemoteHarness(server.URL(), "")
+
+	for _, code := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound} {
+		state.SetFail(&stubs.FailConfig{
+			Method: http.MethodPost,
+			Path:   "/v1/runs",
+			Status: code,
+			Message: "refused",
+		})
+		_, err := h.Start(context.Background(), startReq("c6"))
+		harnessOutcomeFromError(t, err, OutcomeNonRetryableFailure)
+		t.Logf("C6: status %d → non_retryable_failure (§7)", code)
 	}
-	t.Logf("C6: 401/403/404 mapping verified → non_retryable_failure")
+	state.ClearFail()
 }
 
-// TestConformanceC7_422BudgetExceeded tests that 422 maps to non_retryable_failure.
+// TestConformanceC7_422BudgetExceeded tests that a 422 budget_exceeded maps to
+// non_retryable_failure per §7 — the ceiling was refused; retry won't help.
+// Covers both the Start path (POST) and the Result path (GET mid-poll), which
+// previously looped forever on any non-200.
 func TestConformanceC7_422BudgetExceeded(t *testing.T) {
-	got := httpErrorOutcome(422)
-	if got != queue.OutcomeNonRetryableFailure {
-		t.Fatalf("C7 422: got %v, want non_retryable_failure", got)
-	}
-	t.Logf("C7: 422 budget_exceeded → non_retryable_failure")
+	// Start path: POST /v1/runs → 422.
+	t.Run("Start path", func(t *testing.T) {
+		state := stubs.NewHarnessState("stub-model")
+		server := stubs.NewHarnessServer(state)
+		defer server.Close()
+		h := NewRemoteHarness(server.URL(), "")
+
+		state.SetFail(&stubs.FailConfig{
+			Method: http.MethodPost,
+			Path:   "/v1/runs",
+			Status: http.StatusUnprocessableEntity,
+			Code:   "budget_exceeded",
+			Message: "budget 5000 exceeds ceiling",
+		})
+		_, err := h.Start(context.Background(), startReq("c7a"))
+		harnessOutcomeFromError(t, err, OutcomeNonRetryableFailure)
+	})
+
+	// Result path: run is running, then the server starts refusing with 422.
+	// The adapter must stop polling and surface non_retryable, not loop.
+	t.Run("Result path", func(t *testing.T) {
+		state := stubs.NewHarnessState("stub-model")
+		server := stubs.NewHarnessServer(state)
+		defer server.Close()
+		h := NewRemoteHarness(server.URL(), "")
+
+		rid, err := h.Start(context.Background(), startReq("c7b"))
+		if err != nil {
+			t.Fatalf("start: %v", err)
+		}
+
+		// The run exists and is running; now refuse every GET for it with 422.
+		state.SetFail(&stubs.FailConfig{
+			Method: http.MethodGet,
+			Path:   "/v1/runs/" + string(rid),
+			Status: http.StatusUnprocessableEntity,
+			Code:   "budget_exceeded",
+			Message: "budget 5000 exceeds ceiling",
+		})
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		started := time.Now()
+		_, err = h.Result(ctx, rid)
+		if elapsed := time.Since(started); elapsed > 9*time.Second {
+			t.Fatalf("C7 Result path: took %v — adapter kept polling an error response", elapsed)
+		}
+		harnessOutcomeFromError(t, err, OutcomeNonRetryableFailure)
+	})
+	t.Logf("C7: 422 budget_exceeded → non_retryable_failure on Start and Result paths (§7)")
 }
 
-// TestConformanceC8_UnreachableService tests that the adapter does not hang
-// when the service is unreachable, and network errors map to retryable_failure.
+// TestConformanceC8_UnreachableService tests that an unreachable service maps to
+// retryable_failure — never a hang, never a silent success (§7).
 func TestConformanceC8_UnreachableService(t *testing.T) {
-	// Test that mapWireOutcome handles the expected cases correctly.
-	// The adapter's polling loop should return retryable_failure for network errors.
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	// Start a real stub server and close it: the URL is now guaranteed to
+	// refuse connections (no port reuse in the test lifetime).
+	server := stubs.NewHarnessServer(stubs.NewHarnessState("stub-model"))
+	base := server.URL()
+	server.Close()
+
+	h := NewRemoteHarness(base, "")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Verify the mapping logic: network errors are retryable per §7.
-	// We can't easily trigger a network error from a test, but we can verify
-	// the outcome mapping handles the concept correctly.
-	// The key property from §7: "network error / server unreachable → retryable_failure"
-	_ = ctx // unused but reserved for future network error simulation
-	// Verify cancelled→preempted mapping (related to I7/D16)
-	wired := mapWireOutcome("cancelled", nil)
-	if wired != queue.OutcomePreempted {
-		t.Fatalf("C8 cancelled→outcome: got %v, want preempted", wired)
+	started := time.Now()
+	_, err := h.Start(ctx, startReq("c8"))
+	if elapsed := time.Since(started); elapsed > 9*time.Second {
+		t.Fatalf("C8: Start took %v against unreachable service — hang", elapsed)
 	}
-	t.Logf("C8: adapter structure supports retry on network errors (mapping logic verified)")
+	harnessOutcomeFromError(t, err, OutcomeRetryableFailure)
+	t.Logf("C8: unreachable service → retryable_failure, no hang, no silent success (§7)")
 }
 
-// TestConformanceC9_ClientAbortThenReadResult tests that when a client aborts a run,
-// the wire reports "cancelled" and the adapter steers it to "preempted" (I7).
+// TestConformanceC9_ClientAbortThenReadResult tests that when a client aborts a
+// run, the wire says "cancelled" and the adapter records "preempted" — which
+// never crosses the wire (§6, I7).
 func TestConformanceC9_ClientAbortThenReadResult(t *testing.T) {
 	state := stubs.NewHarnessState("stub-model")
 	server := stubs.NewHarnessServer(state)
 	defer server.Close()
-	base := server.URL()
+	h := NewRemoteHarness(server.URL(), "")
 
-	// Start a run
-	body := map[string]any{
-		"attempt_id": "a9", "role": "do", "prompt": "x", "budget": 100000,
-		"timeout_seconds": 3600, "repository": stubs.RepositoryInfoForTest(), "ticket": nil,
+	rid, err := h.Start(context.Background(), startReq("c9"))
+	if err != nil {
+		t.Fatalf("start: %v", err)
 	}
 
-	rid, _ := startRun(t, base, body)
-	if rid == "" {
-		t.Fatal("C9: failed to start run")
+	// Abort: returns only after the remote confirms death.
+	if err := h.Abort(context.Background(), rid); err != nil {
+		t.Fatalf("abort: %v", err)
 	}
 
-	// Abort the run (client-side)
-	code := deleteRun(t, base, rid)
-	if code != http.StatusNoContent {
-		t.Fatalf("C9 DELETE: got %d, want 204", code)
+	// Read the result: the wire reports cancelled; the adapter steers it to
+	// preempted, because only the client knows the abort reason (I7).
+	res, err := h.Result(context.Background(), rid)
+	if err != nil {
+		t.Fatalf("result: %v", err)
+	}
+	if res.Outcome != OutcomePreempted {
+		t.Fatalf("C9: outcome = %q, want preempted (I7)", res.Outcome)
 	}
 
-	// Read the result → wire says cancelled
-	result := getRun(t, base, rid)
-	outcome := result["outcome"].(map[string]any)
+	// The wire itself said cancelled (client-observable via raw HTTP):
+	// "preempted never appears on the wire".
+	raw := getRun(t, server.URL(), string(rid))
+	outcome := raw["outcome"].(map[string]any)
 	if outcome["state"] != "cancelled" {
-		t.Fatalf("C9 after abort: state=%v, want cancelled", outcome["state"])
+		t.Fatalf("C9 wire state = %v, want cancelled", outcome["state"])
 	}
+	t.Logf("C9: client abort → wire cancelled → adapter preempted, never on the wire (§6, I7)")
+}
 
-	// The adapter should steer wire "cancelled" → internal preempted (I7)
-	wired := mapWireOutcome("cancelled", nil)
-	if wired != queue.OutcomePreempted {
-		t.Fatalf("C9 wire→outcome: got %v, want preempted", wired)
+// startReq builds a minimal RunRequest for the black-box conformance cases.
+func startReq(attemptID string) RunRequest {
+	return RunRequest{
+		Role:      "do",
+		Prompt:    "x",
+		Budget:    100000,
+		Timeout:   time.Hour,
+		RepoRef:   Repository{ID: "repo-1", Name: "acme/widgets", URL: "https://github.com/acme/widgets.git", Tracker: "github"},
+		AttemptID: attemptID,
 	}
-	t.Logf("C9: client abort → wire cancelled → adapter preempted verified (I7)")
 }

@@ -77,12 +77,26 @@ type HealthResponse struct {
 	Model     string `json:"model"`
 }
 
+// FailConfig injects an HTTP error response into the stub server, so the
+// harness conformance suite (C5–C9) can drive the real RemoteHarness against
+// a server whose answers the test controls. The error applies to every
+// request matching Method/Path; ClearFail removes it.
+type FailConfig struct {
+	Method     string
+	Path       string // exact path, e.g. "/v1/runs" or "/v1/runs/run-xyz"
+	Status     int
+	Code       string // §7 error code (e.g. "budget_exceeded"); derived from status when empty
+	Message    string // human-readable message (§7 error.message)
+	RetryAfter string // Retry-After header value for 429
+}
+
 // HarnessState holds the state for the harness stub server.
 type HarnessState struct {
 	mu         sync.Mutex
 	Runs       map[string]*HarnessRun
 	Health     HealthResponse
 	AttemptMap map[string]string // attempt_id -> run_id (for idempotency)
+	Fail       *FailConfig
 }
 
 // NewHarnessState creates a new harness state.
@@ -103,6 +117,76 @@ func (s *HarnessState) SetHealth(reachable bool, model string) {
 	defer s.mu.Unlock()
 	s.Health.Reachable = reachable
 	s.Health.Model = model
+}
+
+// SetFail injects an HTTP error response for matching requests (C5–C9).
+func (s *HarnessState) SetFail(fc *FailConfig) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Fail = fc
+}
+
+// ClearFail removes any injected error response.
+func (s *HarnessState) ClearFail() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Fail = nil
+}
+
+// writeFail writes a §7-shaped error response: {"error":{"code":...,"message":...}}.
+// The Retry-After header is set when fc.RetryAfter is non-empty (C5).
+func (s *HarnessServer) writeFail(w http.ResponseWriter, fc *FailConfig) {
+	w.Header().Set("Content-Type", "application/json")
+	if fc.RetryAfter != "" {
+		w.Header().Set("Retry-After", fc.RetryAfter)
+	}
+	w.WriteHeader(fc.Status)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"error": map[string]any{
+			"code":    fc.wireCode(),
+			"message": fc.Message,
+		},
+	})
+}
+
+// wireCode returns the §7 error code written into the injected body. It uses
+// the caller-supplied Code when set, and derives one from the status otherwise,
+// so the body carries a meaningful code rather than a bare status text.
+func (fc *FailConfig) wireCode() string {
+	if fc.Code != "" {
+		return fc.Code
+	}
+	switch fc.Status {
+	case 429:
+		return "rate_limited"
+	case 401:
+		return "unauthorized"
+	case 403:
+		return "forbidden"
+	case 404:
+		return "not_found"
+	case 422:
+		return "budget_exceeded"
+	default:
+		return "server_error"
+	}
+}
+
+// failFor reports whether the injected error applies to the request.
+func (s *HarnessState) failFor(r *http.Request) *FailConfig {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Fail == nil {
+		return nil
+	}
+	fc := s.Fail
+	if fc.Method != "" && fc.Method != r.Method {
+		return nil
+	}
+	if fc.Path != "" && fc.Path != r.URL.Path {
+		return nil
+	}
+	return fc
 }
 
 // CreateRun creates a new run or returns existing one for idempotency.
@@ -244,6 +328,10 @@ func (s *HarnessServer) handleRuns(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *HarnessServer) handleCreateRun(w http.ResponseWriter, r *http.Request) {
+	if fc := s.State.failFor(r); fc != nil {
+		s.writeFail(w, fc)
+		return
+	}
 	var req struct {
 		AttemptID      string         `json:"attempt_id"`
 		Role           string         `json:"role"`
@@ -295,6 +383,14 @@ func (s *HarnessServer) handleRunByID(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/v1/runs/")
 	if path == "" {
 		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+
+	// Injected failures (C5–C9) apply before run lookup so the test can
+	// refuse a specific method+path — e.g. a 404 on GET for an unknown run,
+	// or a 429 on DELETE — without the run needing to exist.
+	if fc := s.State.failFor(r); fc != nil {
+		s.writeFail(w, fc)
 		return
 	}
 

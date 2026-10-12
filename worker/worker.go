@@ -227,10 +227,14 @@ func (w *Worker) runLoop(ctx context.Context) error {
 		runID, err := w.harness.Start(ctx, req)
 		if err != nil {
 			w.log.Error("worker: harness start", "task_id", task.ID, "err", err)
-			// Start failure is a retryable failure: the harness did not
-			// accept the run, so the attempt can be retried.
-			if err := w.queue.Nack(ctx, lease, lease.AttemptID, queue.OutcomeRetryableFailure); err != nil && !errors.Is(err, queue.ErrLeaseExpired) {
-				w.log.Error("worker: nack after start failure", "task_id", task.ID, "err", err)
+			// Start failure is classified by the harness, not hardcoded:
+			// a 401/403/404/422 is non_retryable (config bug or refused
+			// budget — retrying won't help), while a 429/5xx/network error
+			// is retryable. Getting this wrong is the failure mode §7 exists
+			// to prevent (retrying a refused budget, retrying a config bug).
+			outcome := harnessClassifyStartFailure(err)
+			if errNack := w.queue.Nack(ctx, lease, lease.AttemptID, outcome); errNack != nil && !errors.Is(errNack, queue.ErrLeaseExpired) {
+				w.log.Error("worker: nack after start failure", "task_id", task.ID, "outcome", outcome, "err", errNack)
 			}
 			continue
 		}
@@ -239,8 +243,13 @@ func (w *Worker) runLoop(ctx context.Context) error {
 		result, preempted, err := w.waitForResult(ctx, lease, runID)
 		if err != nil {
 			w.log.Error("worker: wait for result", "task_id", task.ID, "error", err)
-			if errNack := w.queue.Nack(ctx, lease, lease.AttemptID, queue.OutcomeRetryableFailure); errNack != nil && !errors.Is(errNack, queue.ErrLeaseExpired) {
-				w.log.Error("worker: nack after wait error", "task_id", task.ID, "err", errNack)
+			// Result errors are classified by the harness (§7): a 404 mid-poll
+			// is non_retryable (lost state), a 429/5xx/network error is
+			// retryable. Only context cancellation (the worker is shutting
+			// down) falls through to the default.
+			outcome := harnessClassifyResultError(err)
+			if errNack := w.queue.Nack(ctx, lease, lease.AttemptID, outcome); errNack != nil && !errors.Is(errNack, queue.ErrLeaseExpired) {
+				w.log.Error("worker: nack after wait error", "task_id", task.ID, "outcome", outcome, "err", errNack)
 			}
 			continue
 		}
@@ -912,6 +921,36 @@ func (w *Worker) removeTriggerLabel(ctx context.Context, task queue.Task) {
 	if err := w.sink.SetLabels(ctx, task.Ticket, nil, []string{label}); err != nil {
 		w.log.Error("worker: remove trigger label", "task_id", task.ID, "label", label, "err", err)
 	}
+}
+
+// harnessClassifyStartFailure extracts the §7 outcome from a harness Start
+// error. The harness now returns a *harness.HarnessError carrying the
+// outcome; plain errors (e.g. context cancellation) fall back to
+// retryable_failure, matching the previous behavior for the common case.
+func harnessClassifyStartFailure(err error) queue.AttemptOutcome {
+	var he *harness.HarnessError
+	if errors.As(err, &he) {
+		return queue.AttemptOutcome(he.AttemptOutcomeValue())
+	}
+	// Plain error: the harness did not accept the run. Retrying is the
+	// safe default — this preserves the previous behavior for callers
+	// that did not return a typed error.
+	return queue.OutcomeRetryableFailure
+}
+
+// harnessClassifyResultError extracts the §7 outcome from a harness Result
+// error. Context cancellation is the worker's own doing (shutdown or
+// preemption) and is not a server condition — it falls through to
+// retryable_failure, consistent with the previous behavior.
+func harnessClassifyResultError(err error) queue.AttemptOutcome {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return queue.OutcomeRetryableFailure
+	}
+	var he *harness.HarnessError
+	if errors.As(err, &he) {
+		return queue.AttemptOutcome(he.AttemptOutcomeValue())
+	}
+	return queue.OutcomeRetryableFailure
 }
 
 // newQueueID generates a random artifact ID.
