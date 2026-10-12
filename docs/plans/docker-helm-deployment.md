@@ -351,9 +351,16 @@ watching `ghcr.io/<owner>/idle-deck` for `main-*`/`v*` tags.
 - [x] Local smoke: `docker build`, `docker run ... --version`,
       `docker run ... idle-deck check` fails without config; in-container
       ACP handshake against `opencode acp` verified
-- [ ] Push `main` to the real origin, verify the `docker` job produces a
-      multi-arch `main-<sha>` tag in GHCR (local origin is a test dir — see
-      Phase 2a, step 0)
+- [x] Push `main` to the real origin, verify the `docker` job produces a
+      multi-arch `main-<sha>` tag in GHCR. Pushed `b66f275..9449c9e` to
+      `github.com/seppaleinen/idle-deck` (fast-forward; SSH, since the HTTPS
+      route was blocked — the `gh` OAuth token lacks the `workflow` scope and
+      the push would update `.github/workflows/ci.yml`). CI run #18 came back
+      **success**: build job (D-id checker, CGO_ENABLED=0 build gate, vet,
+      test, smoke) and docker job both green, image pushed as
+      `ghcr.io/seppaleinen/idle-deck:main-9449c9e` for linux/amd64 + arm64.
+      Note: GHCR readback needs a `packages:read` token; the `gh` OAuth token
+      is denied there, so the readback is from the CI log, not a direct pull.
 - [ ] Tag `v0.1.0`, verify image appears in GHCR
 
 ### Phase 1.5 — Agent selection + cleanup (≈half a day)
