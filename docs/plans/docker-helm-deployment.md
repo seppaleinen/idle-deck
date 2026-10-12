@@ -440,6 +440,15 @@ and clean the working tree.
    `opencode` binary + network and fails identically on `main`. It is not a
    regression; it is a test that cannot run in CI. Tag it `// +build !ci` or
    gate it behind an env var before it blocks CI.
+   **Closed** (`6b7baff`): gated behind `IDLE_DECK_REAL_ACP_TESTS=1`. The
+   failure was characterized as **environmental, not a code bug** — with no
+   provider credentials configured, `session/prompt` returns a JSON-RPC
+   auth error (`-32600`, "Authentication required"), the agent process exits,
+   and `prompt()` records an empty outcome. That is the runner's designed
+   "agent failed, server decides" path, and it is exactly what the health
+   probe (D31) would report as *not idle*. The test simply has no pass
+   condition without credentials. The runner is correct; credentials are the
+   missing piece, and they belong on the dev machine, not in the test.
 
 ## 8. What this plan deliberately does NOT do
 
