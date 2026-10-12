@@ -13,7 +13,16 @@ import (
 // TestACP_RealOpencode runs the ACP adapter against a real opencode process
 // and verifies the prompt completes with a typed artifact. This is the
 // end-to-end proof that W3 works, not a stub.
+//
+// Opt-in only: set IDLE_DECK_REAL_ACP_TESTS=1 to run it. It needs a real
+// opencode install AND configured provider credentials (D38 — the
+// conformance suite via test/fakeacp is the CI gate); without credentials
+// session/prompt returns an auth error and the outcome is empty, which is
+// correct behaviour but not a pass.
 func TestACP_RealOpencode(t *testing.T) {
+	if os.Getenv("IDLE_DECK_REAL_ACP_TESTS") != "1" {
+		t.Skip("set IDLE_DECK_REAL_ACP_TESTS=1 to run against a real opencode + model")
+	}
 	if _, err := exec.LookPath("opencode"); err != nil {
 		t.Skip("opencode not on PATH")
 	}
@@ -60,6 +69,9 @@ func TestACP_RealOpencode(t *testing.T) {
 // TestACP_AbortKillsProcess verifies that Abort kills the agent and that
 // Result unblocks (confirmed-dead, I8).
 func TestACP_AbortKillsProcess(t *testing.T) {
+	if os.Getenv("IDLE_DECK_REAL_ACP_TESTS") != "1" {
+		t.Skip("set IDLE_DECK_REAL_ACP_TESTS=1 to run against a real opencode + model")
+	}
 	if _, err := exec.LookPath("opencode"); err != nil {
 		t.Skip("opencode not on PATH")
 	}
