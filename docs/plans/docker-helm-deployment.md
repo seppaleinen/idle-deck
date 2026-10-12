@@ -412,6 +412,28 @@ and clean the working tree.
       full chart env set now parses and proceeds to GitHub auth (401 on the
       fake token is expected — a real network failure, not a parse crash).
 
+### Phase 2.5 — Conformance suite (D41 §9a, ≈1 day)
+- [x] **C1–C9 all real and client-observable.** The suite was specified in
+      `docs/architecture/remote-contract.md` §9a as the instrument that
+      proves the harness seam (D41). C1–C4 were implemented at the server
+      level; C5–C9 were stubs, and worse — the §7 error taxonomy in
+      `harness/mapping.go` was **dead code**: `httpErrorOutcome` was only
+      called from tests, and `harness/remote.go` never used it.
+- [x] **Root cause found and fixed** (`2984ed8`): the taxonomy existed but
+      wasn't wired into the transport. `RemoteHarness.Start()` returned a
+      plain error string and the worker hard-coded `OutcomeRetryableFailure`
+      on Start failure (worker.go:232) — so a 429, 401, 403, 404, and 422
+      all collapsed to "retryable", silently discarding the contract's
+      retryable/non-retryable distinction. `RemoteHarness.Result()` `continue`d
+      on any non-200, looping until its 24h cap instead of mapping the error.
+- [x] Wired `HarnessError` (typed, §7-classified) through `Start`/`Result`/
+      `Abort`; the worker now extracts the outcome via `errors.As` instead of
+      guessing. D14 retry/escalation semantics unchanged.
+- [x] C5–C9 are now genuinely black-box: drive the real `RemoteHarness`
+      against `test/stubs/harness.go` with injected error conditions
+      (429+Retry-After, 401/403/404, 422 budget_exceeded, unreachable server,
+      client abort → wire cancelled → adapter preempted). CI run #20 green.
+
 ### Phase 3 — Dashboard exposure (≈half a day, optional)
 - [ ] Sidecar `serve` + Service + optional NodePort/Ingress
 - [ ] Auth front (Traefik basic-auth or oauth2-proxy) for anything non-local
