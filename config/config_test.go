@@ -5,6 +5,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -112,6 +113,128 @@ func TestLoad_Defaults(t *testing.T) {
 	}
 	if cfg.Repos != "acme/widgets" {
 		t.Errorf("Repos = %q, want acme/widgets", cfg.Repos)
+	}
+}
+
+func TestDurationSecondsParsing(t *testing.T) {
+	// D28/D43: the documented operator contract uses Go duration strings
+	// ("60s", "168h"), but existing callers and tests pass bare integers
+	// ("60", "900", "604800"). The parser must accept both forms unchanged.
+	tests := []struct {
+		raw  string
+		want time.Duration
+	}{
+		{"60", 60 * time.Second},
+		{"900", 900 * time.Second},
+		{"604800", 604800 * time.Second},
+		{"60s", 60 * time.Second},
+		{"168h", 168 * time.Hour},
+		{"900s", 900 * time.Second},
+		{"1h30m", 90 * time.Minute},
+		{"5m", 5 * time.Minute},
+		{"0", 0},
+	}
+	for _, tc := range tests {
+		var c struct {
+			D time.Duration
+		}
+		err := setField(reflect.ValueOf(&c).Elem(), fieldMeta{
+			name: "D", key: "IDLE_DECK_TEST_DURATION", kind: kindDurationSeconds,
+		}, tc.raw)
+		if err != nil {
+			t.Errorf("setField(%q) returned error: %v", tc.raw, err)
+			continue
+		}
+		if c.D != tc.want {
+			t.Errorf("setField(%q) = %v, want %v", tc.raw, c.D, tc.want)
+		}
+	}
+}
+
+func TestDurationSecondsEmpty(t *testing.T) {
+	var c struct {
+		D time.Duration
+	}
+	err := setField(reflect.ValueOf(&c).Elem(), fieldMeta{
+		name: "D", key: "IDLE_DECK_TEST_DURATION", kind: kindDurationSeconds,
+	}, "")
+	if err == nil {
+		t.Fatal("expected error for empty duration")
+	}
+	var pe *ParseError
+	if !errors.As(err, &pe) {
+		t.Fatalf("expected *ParseError, got %T: %v", err, err)
+	}
+	if pe.Var != "IDLE_DECK_TEST_DURATION" || pe.Kind != "duration" {
+		t.Errorf("ParseError fields wrong: %+v", pe)
+	}
+}
+
+func TestDurationSecondsInvalid(t *testing.T) {
+	// Must still return a *ParseError for unparseable input.
+	for _, raw := range []string{"bad", "12x", "abc def", "1.5"} {
+		var c struct {
+			D time.Duration
+		}
+		err := setField(reflect.ValueOf(&c).Elem(), fieldMeta{
+			name: "D", key: "IDLE_DECK_TEST_DURATION", kind: kindDurationSeconds,
+		}, raw)
+		if err == nil {
+			t.Errorf("setField(%q) expected error, got nil", raw)
+			continue
+		}
+		var pe *ParseError
+		if !errors.As(err, &pe) {
+			t.Errorf("setField(%q) expected *ParseError, got %T: %v", raw, err, err)
+		}
+	}
+}
+
+func TestFromEnvChartDocumentedValues(t *testing.T) {
+	// The Helm chart (charts/idle-deck/values.yaml) emits Go duration strings
+	// for the documented operator contract (operator-surface §4): 60s and 168h.
+	// FromEnv must succeed with these set, not crash the daemon on startup.
+	clearEnv(t)
+	os.Setenv(EnvGitHubToken, "ghp_test")
+	os.Setenv(EnvRepos, "acme/widgets")
+	os.Setenv(EnvHarnessURL, "https://harness.example.com")
+	os.Setenv(EnvHarnessToken, "htok")
+	os.Setenv("IDLE_DECK_POLL_INTERVAL", "60s")
+	os.Setenv("IDLE_DECK_TIER_TIMEOUT_PLAN", "900s")
+	os.Setenv("IDLE_DECK_TIER_TIMEOUT_DO", "10800s")
+	os.Setenv("IDLE_DECK_TIER_TIMEOUT_SWEEP", "3600s")
+	os.Setenv("IDLE_DECK_TIER_TIMEOUT_HOTFIX", "1800s")
+	os.Setenv("IDLE_DECK_RETRY_BACKOFF_INITIAL", "30s")
+	os.Setenv("IDLE_DECK_RETRY_BACKOFF_MAX", "10m")
+	os.Setenv("IDLE_DECK_SWEEP_PERIOD", "168h")
+
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv failed with chart-documented values: %v", err)
+	}
+	if cfg.PollInterval != 60*time.Second {
+		t.Errorf("PollInterval = %v, want 60s", cfg.PollInterval)
+	}
+	if cfg.TierTimeoutPlan != 900*time.Second {
+		t.Errorf("TierTimeoutPlan = %v, want 900s", cfg.TierTimeoutPlan)
+	}
+	if cfg.TierTimeoutDo != 10800*time.Second {
+		t.Errorf("TierTimeoutDo = %v, want 10800s", cfg.TierTimeoutDo)
+	}
+	if cfg.TierTimeoutSweep != 3600*time.Second {
+		t.Errorf("TierTimeoutSweep = %v, want 3600s", cfg.TierTimeoutSweep)
+	}
+	if cfg.TierTimeoutHotfix != 1800*time.Second {
+		t.Errorf("TierTimeoutHotfix = %v, want 1800s", cfg.TierTimeoutHotfix)
+	}
+	if cfg.RetryBackoffInitial != 30*time.Second {
+		t.Errorf("RetryBackoffInitial = %v, want 30s", cfg.RetryBackoffInitial)
+	}
+	if cfg.RetryBackoffMax != 10*time.Minute {
+		t.Errorf("RetryBackoffMax = %v, want 10m", cfg.RetryBackoffMax)
+	}
+	if cfg.SweepPeriod != 168*time.Hour {
+		t.Errorf("SweepPeriod = %v, want 168h", cfg.SweepPeriod)
 	}
 }
 

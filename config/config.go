@@ -188,11 +188,19 @@ func setField(root reflect.Value, f fieldMeta, raw string) error {
 		if raw == "" {
 			return &ParseError{Var: f.key, Kind: "duration", Cause: fmt.Errorf("expected an integer number of seconds, got empty string")}
 		}
-		n, err := strconv.Atoi(raw)
-		if err != nil {
-			return &ParseError{Var: f.key, Kind: "duration", Cause: fmt.Errorf("expected an integer number of seconds, got %q", raw)}
+		// Accept both bare integers ("60", "900", "604800") and Go duration
+		// strings ("60s", "168h", "1h30m"). Bare integers are interpreted as
+		// seconds; the documented operator contract (operator-surface §4, D28/D43)
+		// uses Go duration strings, so both forms must parse.
+		var secs int64
+		if n, err := strconv.Atoi(raw); err == nil {
+			secs = int64(n)
+		} else if d, derr := time.ParseDuration(raw); derr == nil {
+			secs = int64(d / time.Second)
+		} else {
+			return &ParseError{Var: f.key, Kind: "duration", Cause: fmt.Errorf("expected an integer number of seconds or a Go duration string (e.g. 60s, 168h), got %q", raw)}
 		}
-		field.SetInt(int64(n) * int64(time.Second))
+		field.SetInt(secs * int64(time.Second))
 	case kindBool:
 		raw = strings.TrimSpace(strings.ToLower(raw))
 		if raw == "" || raw == "0" || raw == "false" || raw == "no" {
