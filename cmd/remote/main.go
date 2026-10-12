@@ -49,16 +49,25 @@ func main() {
 	// Create the ACP runner (default agent).
 	runner := remote.NewACP(remote.ACPConfig{
 		Bin:   "opencode",
-		Args:  []string{"acp", "--cwd", "{{DIR}}"},
+		Args:  []string{"acp"},
 		Env:   nil,
 	})
-	// Health probe: for now assume model is reachable.
-	healthFunc := func() (bool, string) {
-		// TODO: implement actual model reachability check.
-		return true, "opencode/big-pickle"
+	// Model-reachability probe (D31, ADR 0016). The /health endpoint must
+	// report whether the model can actually generate, not merely whether
+	// the agent process is alive — idle-deck's IdlePolicy gates every run
+	// on this answer, so a stub that always said "reachable" would start
+	// runs against a dead model. The probe drives a real ACP round-trip
+	// through the same agent CLI the runner uses; see cmd/remote/health.go.
+	probeModel := "opencode/big-pickle"
+	for _, m := range roleToModel {
+		if m != "" {
+			probeModel = m
+			break
+		}
 	}
+	healthProbe := newHealthProbe("opencode", []string{"acp"}, probeModel, nil)
 	// Create the remote server.
-	srv := remote.NewServer(runner, healthFunc, httpToken, bareDir, baseDir, gitToken)
+	srv := remote.NewServer(runner, healthProbe.Check, httpToken, bareDir, baseDir, gitToken)
 	// Override the RoleToModel in the config (DefaultConfig sets a default).
 	srv.Config.RoleToModel = roleToModel
 	// Optionally override HTTPTimeout and WorktreeTTL from env if needed.

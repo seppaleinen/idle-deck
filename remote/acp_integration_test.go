@@ -24,7 +24,7 @@ func TestACP_RealOpencode(t *testing.T) {
 
 	runner := NewACP(ACPConfig{
 		Bin: "opencode",
-		Args: []string{"acp", "--cwd", "{{DIR}}"},
+		Args: []string{"acp"},
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
@@ -69,7 +69,7 @@ func TestACP_AbortKillsProcess(t *testing.T) {
 
 	runner := NewACP(ACPConfig{
 		Bin:  "opencode",
-		Args: []string{"acp", "--cwd", "{{DIR}}"},
+		Args: []string{"acp"},
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
