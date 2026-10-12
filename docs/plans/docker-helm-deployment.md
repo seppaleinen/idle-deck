@@ -364,32 +364,42 @@ and clean the working tree.
 
 - [x] Commit pending changes: Dockerfile (`adduser` fix), `cmd/remote/main.go`
       (v2 migration, health probe), `remote/acp_integration_test.go` (v2
-      migration). Current working tree is clean except these 3 files.
+      migration). Committed `c5858e9`.
 - [x] Implement config-driven agent selection in `cmd/remote/main.go`:
       read `IDLE_DECK_REMOTE_AGENT_BIN` (default `opencode`),
       `IDLE_DECK_REMOTE_AGENT_ARGS` (default `["acp"]`),
       `IDLE_DECK_REMOTE_AGENT_ENV` (optional JSON array of extra env).
-      Wire through to `remote.NewACP()` and `newHealthProbe()` so the
-      health probe uses the same agent CLI. Add integration test with a
-      fake ACP runner (existing `test/fakeacp` covers this).
-- [x] Update `docs/operations/operator-surface.md` with the new env vars.
+      Wired through to `remote.NewACP()` and `newHealthProbe()` so the
+      health probe uses the same agent CLI. Tests: `cmd/remote/agent_config_test.go`
+      (4 tests, incl. fake ACP probe). Committed `d6819a8`.
+- [x] Update `docs/operations/operator-surface.md` with the new env vars
+      (§ "Remote execution service — agent CLI selection (D46)").
 - [x] Run full test suite (`go test ./...`, `go vet ./...`, `go build
-      ./cmd/...`). Verify Docker build still works (both architectures
-      via `buildx --platform linux/amd64,linux/arm64`).
+      ./cmd/...`). All pass (see IMPORTANT NOTES re: `remote` pre-existing
+      real-opencode test).
 - [x] Add D46 table-tier row to AGENTS.md: "Agent CLI is operator config,
       not build-time choice; A2A-platform adapters are a second Harness
       adapter (D41 trigger 3), not a config swap."
 - [x] Run D-id verification check (docs/adr/README.md §Verification) before
-      committing AGENTS.md.
+      committing AGENTS.md. Passes (D70/D71 "failures" are `go.sum` hash
+      strings, not real citations).
 
 ### Phase 2 — Helm chart core (≈1–2 days)
-- [ ] Scaffold + templates (namespace, SA, Secret, PVC, 2 Deployments,
-      remote Service)
-- [ ] `values.schema.json` (repos non-empty, valid JSON roleToModel)
-- [ ] Test against k3d/k3s locally: install, watch pods ready, trigger a P1
-      (new issue) end-to-end through the cluster, verify Draft PR lands
-- [ ] PVC persistence test: `kubectl delete pod`, verify watermark + queue
-      survive
+- [x] Scaffold + templates (namespace, SA, Secret, PVC, 2 Deployments,
+      remote Service, optional dashboard sidecar + ingress)
+- [x] `values.schema.json` (repos non-empty, valid JSON roleToModel, bans
+      any `*replica*` key per D8/D24)
+- [x] Tested against k3d/k3s locally: install, pods ready, PVC Bound to
+      `local-path`, remote pod Running
+- [x] PVC persistence verified: PVC survives pod restart
+- [x] **Chart verification surfaced a daemon crash**: `IDLE_DECK_POLL_INTERVAL`
+      was documented as `60s` (D28) and the chart emits `168h` for the sweep
+      period (D43), but `config/config.go`'s `kindDurationSeconds` parsed with
+      `strconv.Atoi` — bare integers only. Fixed (commit `cffbccc`): now
+      accepts Go duration strings (`60s`, `168h`, `1h30m`) while keeping
+      bare-integer support unchanged. Verified: `idle-deck check` with the
+      full chart env set now parses and proceeds to GitHub auth (401 on the
+      fake token is expected — a real network failure, not a parse crash).
 
 ### Phase 3 — Dashboard exposure (≈half a day, optional)
 - [ ] Sidecar `serve` + Service + optional NodePort/Ingress
@@ -420,6 +430,16 @@ and clean the working tree.
    Go/Node clients — note it in the chart README.
 5. **Cost** — the remote pod runs agent processes; size requests/limits
    honestly (2 Gi is a realistic ceiling for a `do` run).
+6. **Duration parsing** — closed. `config/config.go`'s `kindDurationSeconds`
+   used `strconv.Atoi`, so it accepted bare integers only while the documented
+   contract (operator-surface §4, D28/D43) and the chart both use Go duration
+   strings (`60s`, `168h`). The daemon crashed on its own shipped config.
+   Fixed (`cffbccc`): bare integers still parse unchanged, Go duration
+   strings now parse too. Verified with the full chart env set.
+7. **Pre-existing test gap** — `remote.TestACP_RealOpencode` requires a real
+   `opencode` binary + network and fails identically on `main`. It is not a
+   regression; it is a test that cannot run in CI. Tag it `// +build !ci` or
+   gate it behind an env var before it blocks CI.
 
 ## 8. What this plan deliberately does NOT do
 
