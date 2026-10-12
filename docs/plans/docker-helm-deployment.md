@@ -4,7 +4,11 @@
 
 This plan addresses packaging idle-deck as a Docker image and deploying it to a k3s cluster via Helm.
 
-Current state: no Dockerfile, no Helm chart, no container artifacts. CI (`.github/workflows/ci.yml`) builds the binaries with `CGO_ENABLED=0` but does not produce images.
+Current state: Docker image built and pushed to GHCR (CI run #18, green),
+Helm chart scaffolded and verified on k3d/k3s, working tree clean and pushed
+to `github.com/seppaleinen/idle-deck`. CI (`.github/workflows/ci.yml`) builds
+the binaries with `CGO_ENABLED=0`, runs vet/test/smoke, and produces a
+multi-arch image on every push.
 
 ## Architectural constraints (from AGENTS.md)
 
