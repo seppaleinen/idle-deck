@@ -204,6 +204,24 @@ enforces (D43), not something the prompt can grant.
 API base is exactly what GitHub Enterprise requires, so it earns its place on its own merits; §9 then
 reuses it for free.
 
+### Remote execution service — agent CLI selection (D46)
+
+The harness (`idle-deck-remote`) is configured with `IDLE_DECK_REMOTE_*` env
+vars. The most operator-visible of these are the ACP agent launch recipe.
+The agent CLI is operator config, not a build-time choice (D46): the binary
+baked into the image is a default, the operator picks the agent at deploy
+time.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `IDLE_DECK_REMOTE_AGENT_BIN` | `opencode` | ACP agent binary on PATH. Any ACP agent — `opencode`, `pi`, `goose`, or claude/codex/gemini ACP adapters — drops in. |
+| `IDLE_DECK_REMOTE_AGENT_ARGS` | `["acp"]` | JSON array of args passed to the agent CLI. |
+| `IDLE_DECK_REMOTE_AGENT_ENV` | *unset* | JSON array of extra env strings (e.g. `["FOO=bar","BAZ=qux"]`) layered on top of the inherited environment. Use this to pass provider credentials the agent needs without writing env files (D36). |
+
+A2A-platform adapters are a different animal: they are a second `Harness`
+adapter (**D41** trigger 3), not a config swap. See §11 and
+`docs/architecture/remote-contract.md`.
+
 ## 5. CLI surface
 
 | Command | Purpose |

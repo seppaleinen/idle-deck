@@ -55,35 +55,88 @@ Single multi-stage image, both binaries in it. `docker build` from repo root.
 ```dockerfile
 # syntax=docker/dockerfile:1
 
+# idle-deck container image (D32: one static cgo-free binary).
+#
+# Multi-stage: the builder compiles both Go binaries; the opencode stage
+# extracts the prebuilt agent CLI from its npm platform package; the
+# runtime ships only the artifacts — the two Go binaries, the opencode
+# binary, and the system tools the remote needs (git, gh, ripgrep).
+#
+# CGO_ENABLED=0 is asserted at the build step, not inherited from the
+# environment (ADR 0017 / D32): a dependency that reintroduces cgo would
+# silently break `go install` for users, so the build must not depend on
+# the host's environment being clean.
+
 FROM golang:1.27 AS builder
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-# CGO_ENABLED=0 asserted, not inherited (ADR 0017 / D32)
 RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/idle-deck . && \
     CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/idle-deck-remote ./cmd/remote
 
+# opencode v2 ships prebuilt native binaries as npm platform packages
+# (@opencode/cli-linux-x64, @opencode/cli-linux-arm64, + musl variants).
+# Extract the one matching TARGETARCH from the tarball — no source build,
+# no Node at runtime. The ACP runner (remote/acp.go) and the health probe
+# (cmd/remote/health.go) are verified against this line: `opencode acp`
+# with no flags, working directory from the process cwd / session/new.
+FROM node:20-slim AS opencode-stage
+ARG TARGETARCH
+ARG OPENCODE_VERSION=2.0.26
+RUN case "$TARGETARCH" in \
+        amd64) ARCH=x64 ;; \
+        arm64) ARCH=arm64 ;; \
+        *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
+    esac && \
+    npm pack "@opencode/cli-linux-${ARCH}@${OPENCODE_VERSION}" && \
+    mkdir -p /out && \
+    tar xzf "opencode-cli-linux-${ARCH}-${OPENCODE_VERSION}.tgz" && \
+    cp package/bin/opencode /out/opencode
+
 FROM ubuntu:24.04
-# git required by the remote server (D27: it owns checkout and PR production).
-# Ubuntu (not alpine/slim): the remote installs agent tooling and configs,
-# and a full base image is easier to extend than a minimal one.
+# git: the remote owns checkout and worktrees (D27).
+# gh: the remote opens Draft PRs via `gh pr create`.
+# ripgrep: opencode runtime dependency.
+# curl + gpg: installing gh from its apt keyring.
+# ca-certificates: TLS for GitHub + the model provider.
+# tzdata: correct time zone in logs and git.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git ca-certificates tzdata curl \
+        git ca-certificates tzdata curl gpg ripgrep adduser \
+    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        | gpg --dearmor -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+        > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/* \
+    # The base image ships an `ubuntu` user at uid 1000; the non-root user
+    # the image runs as is uid 1000 per the plan, so the placeholder is
+    # removed first (its home dir is not needed at runtime).
+    && userdel --remove ubuntu 2>/dev/null || true \
     && adduser --disabled-password --gecos "" --uid 1000 idle-deck
 COPY --from=builder /out/idle-deck /usr/local/bin/idle-deck
 COPY --from=builder /out/idle-deck-remote /usr/local/bin/idle-deck-remote
+COPY --from=opencode-stage /out/opencode /usr/local/bin/opencode
 USER idle-deck
 ENTRYPOINT ["idle-deck"]
 ```
 
-**The big open question: the agent CLI.** The remote server shells out to
-`opencode` (an ACP runner, `cmd/remote/main.go`). Options:
+**The agent CLI — resolved, and it is configurable.** The remote shells out to
+an ACP agent (`cmd/remote/main.go` → `remote.NewACP(ACPConfig{Bin, Args,
+Env})`). opencode v2 ships **prebuilt native binaries** as npm platform
+packages (`@opencode/cli-linux-x64`, `-linux-arm64`, + musl variants); the
+Dockerfile extracts the one matching `TARGETARCH` from the tarball — no
+source build, no Node at runtime. Verified: the image builds, `opencode
+--version` reports v2.0.26, and the ACP handshake (initialize → session/new)
+works inside the container.
 
-Ubuntu base + `npm i -g opencode` in the image — pin the version in the
-Dockerfile. Image grows to ~600–800 MB (Ubuntu + node + opencode). Acceptable
-for a single-user tool; revisit if that becomes a problem.
+**The agent is not hardcoded to opencode.** `remote/runner.go` defines a
+`Runner` interface (`Start`/`Abort`/`Result`) that is agent-agnostic; the
+launch recipe is a table, not code (see **D46**). Any ACP agent — `opencode`,
+`pi`, `goose`, or `claude`/`codex`/`gemini` behind their ACP adapter — drops
+in via `IDLE_DECK_REMOTE_AGENT_BIN` / `_AGENT_ARGS`. A2A-platform adapters
+are a different animal and stay at **D41 trigger 3** (a second `Harness`
+adapter), not a config swap.
 
 ### Image tags and registry
 
@@ -187,6 +240,10 @@ daemon:
 remote:
   # IDLE_DECK_REMOTE_ROLE_TO_MODEL — JSON string
   roleToModel: '{"plan":"opencode/big-pickle","do":"opencode/big-pickle","sweep":"opencode/big-pickle"}'
+  # Agent CLI selection (config-driven, D46) — default is opencode ACP.
+  # Any ACP agent (opencode, pi, goose, claude/codex/gemini ACP adapters) works.
+  agentBin: "opencode"
+  agentArgs: '["acp"]'
   resources:
     requests: { cpu: 100m, memory: 256Mi }
     limits:   { cpu: "2",  memory: 2Gi }   # agent runs are CPU/memory hungry
@@ -279,19 +336,51 @@ watching `ghcr.io/<owner>/idle-deck` for `main-*`/`v*` tags.
       round-trip (initialize → session/new → session/prompt); only a
       successful generation means reachable, per ADR 0016. Covered by
       `cmd/remote/health_test.go`.
-- [x] Pin the opencode version; verify `npm i -g` works on Ubuntu 24.04
-      the base image. Pinned to **1.18.35** (the release the ACP runner
-      was verified against; 2.0.x rejects the `--cwd` flag the runner
-      uses). Installed in the builder and only the standalone binary
-      ships to runtime — the image needs no Node.
+- [x] Pin the opencode version and make it work on the base image. **Migrated
+      to opencode v2** (2.0.26): v2 drops the `--cwd` flag the v1 runner used
+      (working directory now comes from the process cwd / `session/new`), and
+      v2 ships prebuilt Linux binaries via the npm platform package
+      `@opencode/cli`, so the image extracts the binary instead of building
+      from source (Dockerfile, §1). The health probe and both real-opencode
+      integration tests pass against v2.0.26.
 
 ### Phase 1 — Docker image + CI (≈1 day)
-- [x] `Dockerfile` (multi-stage, non-root, both binaries, git + opencode)
+- [x] `Dockerfile` (multi-stage, non-root, both binaries, git + gh + ripgrep +
+      opencode v2 prebuilt binary)
 - [x] CI `docker` job: buildx multi-arch, push on push + tag
-- [x] Local smoke: `docker build`, `docker run ... idle-deck check` fails
-      without config, succeeds with env; `docker run ... idle-deck run`
-      with the stubs reachable
-- [x] Tag `v0.1.0`, verify image appears in GHCR
+- [x] Local smoke: `docker build`, `docker run ... --version`,
+      `docker run ... idle-deck check` fails without config; in-container
+      ACP handshake against `opencode acp` verified
+- [ ] Push `main` to the real origin, verify the `docker` job produces a
+      multi-arch `main-<sha>` tag in GHCR (local origin is a test dir — see
+      Phase 2a, step 0)
+- [ ] Tag `v0.1.0`, verify image appears in GHCR
+
+### Phase 1.5 — Agent selection + cleanup (≈half a day)
+
+These are the items approved in the plan amendment (config-driven agent
+selection; A2A = D41 trigger 3). They unblock "user picks their agent"
+and clean the working tree.
+
+- [x] Commit pending changes: Dockerfile (`adduser` fix), `cmd/remote/main.go`
+      (v2 migration, health probe), `remote/acp_integration_test.go` (v2
+      migration). Current working tree is clean except these 3 files.
+- [x] Implement config-driven agent selection in `cmd/remote/main.go`:
+      read `IDLE_DECK_REMOTE_AGENT_BIN` (default `opencode`),
+      `IDLE_DECK_REMOTE_AGENT_ARGS` (default `["acp"]`),
+      `IDLE_DECK_REMOTE_AGENT_ENV` (optional JSON array of extra env).
+      Wire through to `remote.NewACP()` and `newHealthProbe()` so the
+      health probe uses the same agent CLI. Add integration test with a
+      fake ACP runner (existing `test/fakeacp` covers this).
+- [x] Update `docs/operations/operator-surface.md` with the new env vars.
+- [x] Run full test suite (`go test ./...`, `go vet ./...`, `go build
+      ./cmd/...`). Verify Docker build still works (both architectures
+      via `buildx --platform linux/amd64,linux/arm64`).
+- [x] Add D46 table-tier row to AGENTS.md: "Agent CLI is operator config,
+      not build-time choice; A2A-platform adapters are a second Harness
+      adapter (D41 trigger 3), not a config swap."
+- [x] Run D-id verification check (docs/adr/README.md §Verification) before
+      committing AGENTS.md.
 
 ### Phase 2 — Helm chart core (≈1–2 days)
 - [ ] Scaffold + templates (namespace, SA, Secret, PVC, 2 Deployments,
@@ -314,8 +403,11 @@ watching `ghcr.io/<owner>/idle-deck` for `main-*`/`v*` tags.
 
 ## 7. Risks / open questions
 
-1. **opencode on Ubuntu 24.04** — Node on Ubuntu is well-trodden, but pin and
-   verify. Fallback: `node:20-slim` base (Debian) if npm misbehaves.
+1. ~~**opencode on Ubuntu 24.04**~~ — resolved. opencode v2 ships prebuilt
+   native binaries as npm platform packages; the image extracts the one matching
+   `TARGETARCH` in a `node:20-slim` stage. No Node at runtime, no npm install
+   against the base image. Verified: builds for `linux/arm64`, `opencode
+   --version` reports v2.0.26, ACP handshake works in-container.
 2. **SQLite on `local-path` PVC** — no snapshots out of the box. The DB is
    small and the queue is re-derivable from GitHub state (watermarks
    re-seed), so risk is low; still, document `sqlite3 backup` as the
@@ -336,3 +428,33 @@ watching `ghcr.io/<owner>/idle-deck` for `main-*`/`v*` tags.
 - No multi-tenancy/multi-replica — D4/D8/D24.
 - No separate image for the remote server — one image, two entrypoints is
   simpler to maintain and the size delta is one static Go binary (~15 MB).
+- No A2A / third-party agent-platform adapter — that is a second `Harness`
+  adapter, and D41's trigger list names it (trigger 3: a second operator
+  needs a harness the first cannot serve). A2A is agent↔agent delegation
+  over server-to-server, and coding agents speak ACP over stdio — the remote
+  layer (workspace, git, timeout, typed artifacts, model-reachability health)
+  is load-bearing regardless of protocol. Config-driven agent selection
+  (D46) covers "use a different ACP CLI"; a different *platform* is a
+  different decision.
+
+### Executor lifetime is an implementation detail, not a contract question
+
+The wire contract pins four endpoints and their semantics — it does **not**
+say whether the remote process lives for the cluster's life or is spawned
+per run. Both are compatible with the contract:
+
+| | Long-running (current default) | Ephemeral per-run |
+|---|---|---|
+| Workspace | PVC-backed, reused across runs | EmptyDir, recreated per run |
+| Clone cost | One clone, then worktrees | One clone per run |
+| Cold starts | None | One per run |
+| PVC | Required | Not required |
+| Health probe | `/health` answers for the pod | Each run must probe its own agent |
+
+The MVP ships long-running (matches the plan's PVC). The ephemeral variant
+is **parked, not decided**: it leaks in two places — the `/health` endpoint
+would need to report per-run rather than per-pod, and the idempotency grace
+period (contract §4) would need a per-run clock. Neither is hard, but both
+are real work, and the MVP's single-user, one-machine shape (D4/D8) does not
+push toward it. It stays open until a second user or a real cold-start problem
+names a trigger.
