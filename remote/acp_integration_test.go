@@ -10,15 +10,24 @@ import (
 	"time"
 )
 
-// TestACP_RealOpencode runs the ACP adapter against a real opencode process
-// and verifies the prompt completes with a typed artifact. This is the
-// end-to-end proof that W3 works, not a stub.
+// TestACP_RealOpencode is a **vendor compatibility smoke test**, not an
+// integration test: it runs the ACP adapter against a real opencode process
+// and checks that our client can still talk to it. It exists to catch
+// opencode ACP drift — a changed sessionId format, a renumbered
+// session/update shape, a renamed tool_call field — before it silently
+// breaks production runs.
+//
+// It is NOT the CI gate. `remote/conformance_test.go` drives the same
+// acpRunner against `test/fakeacp` (ok/error/hang/die/slow) and covers
+// idempotency, server-enforced timeout, confirmed-dead abort, the outcome
+// taxonomy, and artifact typing — with no binary, no network, no
+// credentials. That suite is the gate, per D38.
 //
 // Opt-in only: set IDLE_DECK_REAL_ACP_TESTS=1 to run it. It needs a real
-// opencode install AND configured provider credentials (D38 — the
-// conformance suite via test/fakeacp is the CI gate); without credentials
+// opencode install AND configured provider credentials; without them
 // session/prompt returns an auth error and the outcome is empty, which is
-// correct behaviour but not a pass.
+// correct behaviour but not a pass. Run it manually after every opencode
+// upgrade, on a machine that has credentials.
 func TestACP_RealOpencode(t *testing.T) {
 	if os.Getenv("IDLE_DECK_REAL_ACP_TESTS") != "1" {
 		t.Skip("set IDLE_DECK_REAL_ACP_TESTS=1 to run against a real opencode + model")
