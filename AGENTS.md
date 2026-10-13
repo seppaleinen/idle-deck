@@ -67,6 +67,8 @@ flips and `Related:` is correctable (**D42**) — the rest is frozen.
 | **D8** | `max_concurrent_jobs: 1` for the MVP. | Single user, one workstation. The boundary must not foreclose N. |
 | **D22** | **Never merges.** The MVP opens a Draft PR and stops. Merge policy is future work. | Autonomy is earned by evidence, not assumed. |
 | **D19** | **CLI only** for the MVP. [#2](https://github.com/seppaleinen/idle-deck/issues/2) (GUI) is post-MVP and its requirements stay deliberately undecided. | Don't build a UI against an unsettled ontology. |
+| **D47** | **Post-MVP: simple read-only dashboard is now in scope.** `serve` is an accepted CLI function, amending D33's CLI surface to `run`, `status`, `check`, `--version`, `serve`. D19's CLI-only MVP boundary is now passed. | The MVP was a deliberate narrow scope (D2/D19). The dashboard code already exists in the codebase and the Helm chart is scaffolded. Acknowledging we've passed the MVP boundary makes the GUI explicit rather than accidental. |
+
 
 ### Domain model
 
