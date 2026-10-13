@@ -34,21 +34,24 @@ contract is fixed; the launch recipe is a table.
 
 | File | Lines | What it does |
 |---|---|---|
-| `remote/runner.go` | 85 | `Runner` interface (`Start`/`Abort`/`Result`), `Workspace`, `Artifact`, `RunResult`, `AttemptOutcome` |
-| `remote/server.go` | 241 | `Server` struct, `Routes()`, bearer auth, `handleRuns` (POST, idempotent C1), `handleRunByID` (GET/DELETE), `handleHealth` (D31) |
-| `remote/run.go` | 268 | `Run` struct, `NewRun` (start + watchdog + collect goroutines), `Complete`, `Abort`, outcome mapping, wire response types |
+| `remote/runner.go` | 84 | `Runner` interface (`Start`/`Abort`/`Result`), `Workspace`, `Artifact`, `RunResult`, `AttemptOutcome` |
+| `remote/server.go` | 244 | `Server` struct, `Routes()`, bearer auth, `handleRuns` (POST, idempotent C1), `handleRunByID` (GET/DELETE), `handleHealth` (D31) |
+| `remote/run.go` | 313 | `Run` struct, `NewRun` (start + watchdog + collect goroutines), `Complete`, `Abort`, outcome mapping, wire response types |
 | `remote/acp.go` | 540 | `acpRunner` — JSON-RPC over stdio, `initialize → session/new → session/prompt`, `observe()` for tool-call artifacts, `Abort` = process kill (confirmed-dead I8) |
-| `remote/workspace.go` | 335 | `WorkspaceManager` — `PrepareWorkspace` (bare cache + worktree), `OnSuccess` (stage → commit → feature branch → push → Draft PR → `pull_request` artifact), `OnFailure` (debug branch → `branch` artifact) |
-| `remote/git.go` | 243 | `GitRunner` — clone, worktree, fetch, checkout, push, commit helpers |
-| `remote/config.go` | 43 | `Config` struct — role→model map, tokens, timeouts, workspace manager |
-| `remote/conformance_test.go` | 330 | C1–C4 server-level tests against `stubRunner`, health probe tests |
+| `remote/workspace.go` | 332 | `WorkspaceManager` — `PrepareWorkspace` (bare cache + worktree), `OnSuccess` (stage → commit → feature branch → push → Draft PR → `pull_request` artifact), `OnFailure` (debug branch → `branch` artifact) |
+| `remote/git.go` | 332 | `GitRunner` — clone, worktree, fetch, checkout, push, commit helpers; plus `BareRepoName`, `ensureBareRepoInitialised`, `ResolveBaseRef`, `WorktreeAt` (detached), `RemoveWorktree`, `PushToUpstream` |
+| `remote/config.go` | 46 | `Config` struct — role→model map, tokens, timeouts, workspace manager, `TestUpstreamURL` |
+| `remote/conformance_test.go` | 338 | C1–C4 server-level tests against `stubRunner`, health probe tests |
+| `remote/workspace_test.go` | 400 | Acceptance tests for #28 — PrepareWorkspace, OnSuccess/OnFailure, tokenURL, PushToUpstream |
+| `remote/gc.go` | 112 | `Server.GCWorktrees` — worktree GC honoring `Config.WorktreeTTL` (#31) |
+| `remote/gc_test.go` | 162 | GC acceptance tests |
 | `remote/acp_integration_test.go` | 172 | Vendor compatibility smoke test against real opencode (gated `IDLE_DECK_REAL_ACP_TESTS=1`) |
 
 ### Entry point (`cmd/remote/`)
 
 | File | Lines | What it does |
 |---|---|---|
-| `cmd/remote/main.go` | 121 | Composition root — reads env, builds ACP config (D46), wires runner + health probe + server, starts HTTP listener |
+| `cmd/remote/main.go` | 161 | Composition root — reads env, builds ACP config (D46), wires runner + health probe + server, GC ticker, starts HTTP listener |
 | `cmd/remote/health.go` | 313 | Real model-reachability probe — `initialize → session/new → session/prompt` round-trip, 30s budget, 15s cache TTL, `cmd.Stderr = io.Discard` |
 | `cmd/remote/health_test.go` | — | Health probe tests |
 | `cmd/remote/agent_config_test.go` | — | Agent config env var tests |
@@ -57,7 +60,7 @@ contract is fixed; the launch recipe is a table.
 
 | File | Lines | What it does |
 |---|---|---|
-| `harness/remote.go` | 304 | `RemoteHarness` — `Start` (POST, §7 classification), `Abort` (DELETE, confirmed-dead), `Result` (poll GET, §7 taxonomy), `Health` (GET /health) |
+| `harness/remote.go` | 303 | `RemoteHarness` — `Start` (POST, §7 classification), `Abort` (DELETE, confirmed-dead), `Result` (poll GET, §7 taxonomy), `Health` (GET /health) |
 | `harness/conformance_test.go` | 477 | C1–C9 black-box tests — drives `RemoteHarness` against `test/stubs/harness.go` with injected errors (429, 401/403/404, 422, unreachable, abort) |
 
 ### Test infrastructure
@@ -78,6 +81,11 @@ contract is fixed; the launch recipe is a table.
 ## Commit history (W1–W9)
 
 ```
+8944734 2026-10-13 feat(remote): worktree GC honoring Config.WorktreeTTL (#31)
+02a7f31 2026-10-13 feat(remote): workspace management — detached worktrees, per-repo cache, PRCreator seam, acceptance tests (#28)
+ddbf63e 2026-10-13 fix(health): unify health probe endpoint to /health (#29)
+02f7a46 2026-10-13 fix(idle): correct TestIdlePolicy_ReachableTrue expectation
+04e7312 2026-10-13 feat(remote): wire workspace lifecycle into Run.collect()
 9787815 2026-10-12 refactor(remote): remove stub C5/C6 tests; pointer to harness-level black-box suite
 2984ed8 2026-10-12 conformance: wire §7 error taxonomy into harness transport and worker, make C5–C9 black-box
 9449c9e 2026-10-12 docs: retitle TestACP_RealOpencode as a vendor compatibility smoke test
@@ -105,21 +113,17 @@ a99a196 2026-10-05 issue #20: Harness adapter (wire contract, outcome mapping, c
 
 1. **End-to-end pipeline test.** No evidence of idle-deck dispatching a task that completes through the full pipeline: poll → enqueue → dequeue → Start → agent works → workspace commits → branch pushed → Draft PR opened. The pieces exist; nobody has wired the daemon's worker loop to a real remote wrapper and run a task through it.
 
-2. **`OnSuccess`/`OnFailure` wired into `Run.collect()`.** The `Run.collect()` method records `RunResult` from the runner but does not call `WorkspaceManager.OnSuccess()` or `OnFailure()`. The workspace lifecycle (commit → branch → push → PR) is implemented in `workspace.go` but not invoked from `run.go`. The server returns the runner's artifacts directly, without the git operations.
-
-3. **Worktree cleanup.** `RemoveWorktree` exists in `git.go` but is never called. Worktrees accumulate indefinitely (matching `Config.WorktreeTTL` default of 24h, but no GC goroutine is running).
-
-4. **Real opencode integration in CI.** `TestACP_RealOpencode` is gated behind `IDLE_DECK_REAL_ACP_TESTS=1` and skipped in CI. It would need credentials to pass.
+2. **Real opencode integration in CI.** `TestACP_RealOpencode` is gated behind `IDLE_DECK_REAL_ACP_TESTS=1` and skipped in CI. It would need credentials to pass.
 
 ## Remaining work to close the issue
 
 | Item | Effort | Blocks |
 |---|---|---|
-| Wire `OnSuccess`/`OnFailure` into `Run.collect()` | Small | Acceptance #3 |
+| ~~Wire `OnSuccess`/`OnFailure` into `Run.collect()`~~ | Small | Done — commit `04e7312` |
+| ~~Add worktree GC (honor `WorktreeTTL`)~~ | Small | Done — [#31](https://github.com/seppaleinen/idle-deck/issues/31), commit `8944734` |
 | End-to-end test (local or cluster) | Medium | Acceptance #2 |
-| Add worktree GC (honor `WorktreeTTL`) | Small | Cleanup — tracked as [#31](https://github.com/seppaleinen/idle-deck/issues/31) |
 | Run real opencode smoke test (manual, with creds) | Small | Acceptance #1 |
-| Close issue #27 on GitHub | — | All above |
+| Close issue #27 on GitHub | — | Acceptance #1 and #2 |
 
 ## Architecture decisions touched
 
