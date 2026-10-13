@@ -128,7 +128,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	run, err := NewRun(req.AttemptID, s.Runner, workspace, req.toStartRequest(), req.TimeoutSeconds)
+	run, err := NewRun(req.AttemptID, s.Runner, workspace, req.toStartRequest(), req.TimeoutSeconds, s.Config.WorkspaceManager)
 	if err != nil {
 		// A run that could not start is not a wire error per se — the
 		// contract does not define a 500 on Start beyond auth/validation.

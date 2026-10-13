@@ -21,41 +21,43 @@ const (
 // Run is a server-side run record. It owns the runner session and the
 // workspace lifecycle. One run = one agent execution.
 type Run struct {
-	mu           sync.Mutex
-	ID           string
-	AttemptID    string
-	Status       RunStatus
-	StartedAt    time.Time
-	Deadline     time.Time // server-enforced timeout (D17)
-	LastActivity time.Time
-	Runner       Runner
-	SessionID    SessionID
-	Workspace    Workspace
-	Outcome      *RunResult
-	Cancelled    bool
-	done         chan struct{} // closed when the run reaches a terminal state
-	ctx          context.Context
-	cancel       context.CancelFunc
+	mu              sync.Mutex
+	ID              string
+	AttemptID       string
+	Status          RunStatus
+	StartedAt       time.Time
+	Deadline        time.Time // server-enforced timeout (D17)
+	LastActivity    time.Time
+	Runner          Runner
+	SessionID       SessionID
+	Workspace       Workspace
+	Outcome         *RunResult
+	Cancelled       bool
+	done            chan struct{} // closed when the run reaches a terminal state
+	ctx             context.Context
+	cancel          context.CancelFunc
+	WorkspaceManager *WorkspaceManager
 }
 
 // NewRun creates a run record and starts it via the runner.
 // timeoutSeconds is server-enforced (D17): a dead idle-deck cannot leave a
 // billed run orbiting. The watchdog goroutine kills the session at the
 // deadline regardless of whether idle-deck is still polling.
-func NewRun(attemptID string, runner Runner, ws Workspace, req StartRequest, timeoutSeconds int) (*Run, error) {
+func NewRun(attemptID string, runner Runner, ws Workspace, req StartRequest, timeoutSeconds int, wm *WorkspaceManager) (*Run, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	run := &Run{
-		ID:           "run-" + uuid.New().String()[:12],
-		AttemptID:    attemptID,
-		Status:       StatusRunning,
-		StartedAt:    time.Now().UTC(),
-		Deadline:     time.Now().UTC().Add(time.Duration(timeoutSeconds) * time.Second),
-		LastActivity: time.Now().UTC(),
-		Runner:       runner,
-		Workspace:    ws,
-		done:         make(chan struct{}),
-		ctx:          ctx,
-		cancel:       cancel,
+		ID:              "run-" + uuid.New().String()[:12],
+		AttemptID:       attemptID,
+		Status:          StatusRunning,
+		StartedAt:       time.Now().UTC(),
+		Deadline:        time.Now().UTC().Add(time.Duration(timeoutSeconds) * time.Second),
+		LastActivity:    time.Now().UTC(),
+		Runner:          runner,
+		Workspace:       ws,
+		WorkspaceManager: wm,
+		done:            make(chan struct{}),
+		ctx:             ctx,
+		cancel:          cancel,
 	}
 
 	// Start the agent in the workspace. This is synchronous: the runner
@@ -90,12 +92,56 @@ func (r *Run) collect() {
 	if r.wasCancelled() {
 		return // Abort owns the outcome
 	}
+	// If the runner returned an error, treat as retryable failure and still
+	// attempt workspace failure handling to preserve debug state.
 	if err != nil {
-		// Agent died spontaneously (process exit, RPC error): retryable.
-		r.Complete(RunResult{Outcome: OutcomeRetryableFailure})
+		result = RunResult{Outcome: OutcomeRetryableFailure}
+		if r.WorkspaceManager != nil && r.Workspace.Dir != "" {
+			if art, werr := r.WorkspaceManager.OnFailure(r.Workspace, r.Workspace, r.AttemptID); werr == nil {
+				result.Artifacts = append(result.Artifacts, art)
+			}
+			// If workspace handling fails, we keep the runner outcome and
+			// surface the error via logs. Do not clobber a succeeded outcome.
+		}
+		r.Complete(result)
 		return
 	}
+
+	// Runner succeeded with a terminal outcome. Wire workspace lifecycle:
+	// - Success → OnSuccess (feature branch + Draft PR)
+	// - Any failure (retryable/non-retryable/timeout) → OnFailure (debug branch)
+	// D21: failed and timed-out runs preserve state to debug branch.
+	if r.WorkspaceManager != nil && r.Workspace.Dir != "" {
+		var art Artifact
+		var werr error
+		switch result.Outcome {
+		case OutcomeSucceeded:
+			art, werr = r.WorkspaceManager.OnSuccess(r.Workspace, r.Workspace, r.AttemptID)
+		default:
+			// Any non-success outcome is a failure path per D14/D21.
+			art, werr = r.WorkspaceManager.OnFailure(r.Workspace, r.Workspace, r.AttemptID)
+		}
+		if werr == nil && art.Kind != "" {
+			result.Artifacts = mergeArtifacts(result.Artifacts, art)
+		}
+		// If workspace handling errors, keep runner outcome and log.
+		// Do not clobber a succeeded outcome with a workspace failure.
+	}
 	r.Complete(result)
+}
+
+// mergeArtifacts appends new artifact if not already present (dedupe by Kind+URI,
+// matching acp.go addArtifact semantics).
+func mergeArtifacts(existing []Artifact, a Artifact) []Artifact {
+	if a.Kind == "" {
+		return existing
+	}
+	for _, x := range existing {
+		if x.Kind == a.Kind && x.URI == a.URI {
+			return existing
+		}
+	}
+	return append(existing, a)
 }
 
 // wasCancelled reports whether the run was aborted by a client or the
