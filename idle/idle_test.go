@@ -12,8 +12,8 @@ import (
 // Test 1: Harness returns {"reachable": true} → Idle() returns true, nil.
 func TestIdlePolicy_ReachableTrue(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/health" {
-			t.Errorf("expected /v1/health, got %s", r.URL.Path)
+		if r.URL.Path != "/health" {
+			t.Errorf("expected /health, got %s", r.URL.Path)
 		}
 		if auth := r.Header.Get("Authorization"); auth != "Bearer test-token" {
 			t.Errorf("expected Bearer test-token, got %q", auth)
