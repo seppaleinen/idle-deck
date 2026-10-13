@@ -5,6 +5,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/seppaleinen/idle-deck/remote"
 )
@@ -71,7 +74,7 @@ func main() {
 		roleToModel = map[string]string{
 			"plan":   "opencode/big-pickle",
 			"do":     "opencode/big-pickle",
-			"sweep":  "opencode/big-pickle",
+			"sweep": "opencode/big-pickle",
 		}
 	} else {
 		if err := json.Unmarshal([]byte(roleToModelJSON), &roleToModel); err != nil {
@@ -112,10 +115,48 @@ func main() {
 	// Optionally override HTTPTimeout and WorktreeTTL from env if needed.
 	// For simplicity, we keep the defaults from DefaultConfig.
 
+	// Worktree GC (#31): a periodic sweep of BaseDir that removes worktrees
+	// older than Config.WorktreeTTL, skipping any a running run is using.
+	// Started here (composition root) and stopped on shutdown; it owns no
+	// state of its own, so it can run independently of the HTTP server.
+	gcStop := make(chan struct{})
+	go runGC(srv, gcStop)
+
 	// Set up HTTP server.
 	mux := srv.Routes()
 	log.Printf("Starting remote server on %s", listenAddr)
-	if err := http.ListenAndServe(listenAddr, mux); err != nil {
-		log.Fatalf("ListenAndServe: %v", err)
+	srvErr := make(chan error, 1)
+	go func() {
+		srvErr <- http.ListenAndServe(listenAddr, mux)
+	}()
+
+	// Wait for a shutdown signal or the HTTP server to die.
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	select {
+	case s := <-sig:
+		log.Printf("received %s, shutting down", s)
+	case err := <-srvErr:
+		log.Printf("HTTP server stopped: %v", err)
+	}
+
+	// Stop the GC loop and let in-flight work settle.
+	close(gcStop)
+	log.Printf("remote server stopped")
+}
+
+// runGC ticks the server's worktree GC on GCPeriod. It stops when stop is
+// closed. The first tick is immediate so a freshly started server reclaims
+// worktrees left over from a previous run (e.g. after a crash restart).
+func runGC(srv *remote.Server, stop chan struct{}) {
+	ticker := time.NewTicker(remote.GCPeriod)
+	defer ticker.Stop()
+	for {
+		srv.GCWorktrees(time.Now().UTC())
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+		}
 	}
 }
