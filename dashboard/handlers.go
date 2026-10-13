@@ -161,7 +161,7 @@ func (s *Server) probeHarness(ctx context.Context) Harness {
 	}
 	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(cctx, http.MethodGet, s.cfg.HarnessURL+"/v1/health", nil)
+	req, err := http.NewRequestWithContext(cctx, http.MethodGet, s.cfg.HarnessURL+"/health", nil)
 	if err != nil {
 		h.Error = err.Error()
 		return h

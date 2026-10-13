@@ -291,7 +291,7 @@ D8/D24 make it a constant 1. Don't give operators the footgun.
 **remote Deployment:**
 - `command: ["/usr/local/bin/idle-deck-remote"]`
 - Same PVC, subPathMounts: `bare` → `/data/bare`, `work` → `/data/work`
-- **Liveness probe: `httpGet /v1/health` on :8080** — the remote contract
+- **Liveness probe: `httpGet /health` on :8080** — the remote contract
   already defines this endpoint, so it's free.
 - **One caveat:** the current health endpoint is a stub (`cmd/remote/main.go`
   hardcodes `return true, "opencode/big-pickle"`). For the *process*

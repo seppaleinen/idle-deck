@@ -298,7 +298,7 @@ func NewHarnessServer(state *HarnessState) *HarnessServer {
 
 	mux.HandleFunc("/v1/runs", server.handleRuns)
 	mux.HandleFunc("/v1/runs/", server.handleRunByID)
-	mux.HandleFunc("/v1/health", server.handleHealth)
+	mux.HandleFunc("/health", server.handleHealth)
 
 	return server
 }

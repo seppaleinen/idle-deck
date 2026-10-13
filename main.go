@@ -93,7 +93,7 @@ func runCheck(args []string) int {
 	}
 	fmt.Println("tracker: authenticated read OK")
 
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, cfg.HarnessURL+"/v1/health", nil)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, cfg.HarnessURL+"/health", nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "harness health: %v\n", err)
 		return 1
@@ -417,7 +417,7 @@ func runStatus(args []string) int {
 
 	fmt.Println("\nHarness:")
 	if cfg.HarnessURL != "" {
-		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, cfg.HarnessURL+"/v1/health", nil)
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, cfg.HarnessURL+"/health", nil)
 		if cfg.HarnessToken != "" {
 			req.Header.Set("Authorization", "Bearer "+cfg.HarnessToken)
 		}

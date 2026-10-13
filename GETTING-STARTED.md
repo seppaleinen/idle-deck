@@ -156,7 +156,7 @@ WAL mode). It requires no auth — local-only by design (D4).
 Open `http://127.0.0.1:8090/` in a browser. Panels:
 
 - **Heartbeat** — daemon liveness (beat age, stale flag) + run lock holder
-- **Harness** — live `GET /v1/health` probe (reachable, status code, body)
+- **Harness** — live `GET /health` probe (reachable, status code, body)
 - **Repositories** — configured repos, watermark, last poll time
 - **Queue** — task counts by state (queued/running/succeeded/escalated) and tier
 - **Active task** — running task ID, tier, role, attempt, elapsed time

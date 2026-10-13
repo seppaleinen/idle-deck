@@ -266,9 +266,9 @@ func mapWireArtifacts(runResp runResponse) []Artifact {
 }
 
 // Health checks the remote service model reachability per D31.
-// GET /v1/health returns reachability, not process liveness.
+// GET /health returns reachability, not process liveness.
 func (h *RemoteHarness) Health(ctx context.Context) (bool, string, error) {
-	url := h.baseURL + "/v1/health"
+	url := h.baseURL + "/health"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return false, "", fmt.Errorf("create health request: %w", err)

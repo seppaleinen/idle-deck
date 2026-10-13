@@ -26,7 +26,7 @@ func NewHarnessIdlePolicy(baseURL, token string) *HarnessIdlePolicy {
 }
 
 func (p *HarnessIdlePolicy) Idle(ctx context.Context) (bool, error) {
-	url := p.baseURL + "/v1/health"
+	url := p.baseURL + "/health"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return false, fmt.Errorf("idle probe: create request: %w", err)

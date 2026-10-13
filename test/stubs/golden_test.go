@@ -198,7 +198,7 @@ func deleteRun(t *testing.T, baseURL, runID string) int {
 
 func checkHealth(t *testing.T, baseURL string) HealthResponse {
 	t.Helper()
-	resp, err := httpClient.Get(baseURL + "/v1/health")
+	resp, err := httpClient.Get(baseURL + "/health")
 	if err != nil {
 		t.Fatal(err)
 	}
