@@ -23,6 +23,10 @@ type Config struct {
 	GitHubAPIToken string
 	// WorkspaceManager handles workspace operations.
 	WorkspaceManager *WorkspaceManager
+	// TestUpstreamURL is a real local git repo used by conformance tests as
+	// the upstream for PrepareWorkspace. Empty in production — the server
+	// never guesses at a URL; every repo comes from the allowlist (D30).
+	TestUpstreamURL string
 }
 
 // DefaultConfig returns a configuration with sensible defaults.

@@ -121,7 +121,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 
 	// Prepare the workspace before starting the run.
-	workspace, err := s.Config.WorkspaceManager.PrepareWorkspace(toWorkspace(req.Repository), req.AttemptID)
+	workspace, err := s.Config.WorkspaceManager.PrepareWorkspace(toWorkspace(req.Repository, req.Ticket), req.AttemptID)
 	if err != nil {
 		// If we can't prepare the workspace, we can't start the run.
 		errorJSON(w, http.StatusBadGateway, "workspace_failed", err.Error())
@@ -229,13 +229,17 @@ func (r startRequest) toStartRequest() StartRequest {
 	}
 }
 
-// toWorkspace converts a wireRepository to a Workspace.
-// It ignores the Ticket for now; the WorkspaceManager will use it
-// for branch names.
-func toWorkspace(repo wireRepository) Workspace {
-	return Workspace{
+// toWorkspace converts the wire request into a Workspace. The ticket's
+// external id is the ticket_id (D15: feature/<ticket_id>-<slug>); a nil
+// ticket means the run has no ticket (P3 sweep, D44).
+func toWorkspace(repo wireRepository, ticket *wireTicket) Workspace {
+	ws := Workspace{
 		RepoURL: repo.URL,
 	}
+	if ticket != nil {
+		ws.TicketID = ticket.ExternalID
+	}
+	return ws
 }
 
 var _ = uuid.New // keep uuid import for NewRun in run.go (separate file)

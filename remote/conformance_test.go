@@ -49,8 +49,8 @@ func startRun(t *testing.T, srv *Server, attemptID, role, prompt string, budget,
 		Prompt:         prompt,
 		Budget:         budget,
 		TimeoutSeconds: timeout,
-		Repository:     wireRepository{ID: "repo-1", Name: "acme/widgets", URL: "https://github.com/acme/widgets.git", Tracker: "github"},
-		Ticket:         &wireTicket{Tracker: "github", ExternalID: "42", URL: "https://github.com/acme/widgets/issues/42"},
+		Repository:     wireRepository{ID: "repo-1", Name: "conformance/upstream", URL: srv.Config.TestUpstreamURL, Tracker: "github"},
+		Ticket:         &wireTicket{Tracker: "github", ExternalID: "42", URL: "https://example.com/issue/42"},
 	})
 	resp, raw := driveHTTP(t, srv, http.MethodPost, "/v1/runs", body)
 	var out struct {
@@ -247,13 +247,21 @@ func TestHealthModelDown(t *testing.T) {
 // newTestServer creates a test server with a stub runner.
 func newTestServer(t *testing.T) (*Server, *stubRunner) {
 	t.Helper()
-	r := newStubRunner()
-	// Use temporary directories for bareDir and baseDir
+	upstream := newUpstreamRepo(t)
 	bareDir := t.TempDir()
 	baseDir := t.TempDir()
-	srv := NewServer(r, func() (bool, string) { return true, "stub-model" }, "", bareDir, baseDir, "")
+	cfg := DefaultConfig(bareDir, baseDir, "tok-conformance")
+	cfg.TestUpstreamURL = upstream
+	srv := &Server{
+		Runs:       make(map[string]*Run),
+		AttemptMap: make(map[string]string),
+		Runner:     newStubRunner(),
+		Health:     func() (bool, string) { return true, "stub-model" },
+		Config:     cfg,
+		HTTPToken:  "",
+	}
 	t.Cleanup(func() { time.Sleep(50 * time.Millisecond) })
-	return srv, r
+	return srv, srv.Runner.(*stubRunner)
 }
 
 // stubRunner implements Runner for testing the server without a real agent.

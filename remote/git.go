@@ -78,10 +78,14 @@ func (g *GitRunner) CreateBranchFromHead(branch string) error {
 	return g.RunError("checkout", "-b", branch)
 }
 
-// PushBranch pushes the given branch to origin and sets the upstream.
-// If force is true, it uses --force-with-lease.
-func (g *GitRunner) PushBranch(branch string, force bool) error {
-	args := []string{"push", "origin", branch}
+// PushBranch pushes the given branch to the named remote and sets the
+// upstream. If force is true, it uses --force-with-lease.
+//
+// The remote name is explicit because a worktree's "origin" is the local
+// bare cache (the shared object store), not the upstream GitHub remote.
+// Pushing to "origin" would push into the cache and never reach the repo.
+func (g *GitRunner) PushBranch(branch, remote string, force bool) error {
+	args := []string{"push", remote, branch}
 	if force {
 		args = append(args, "--force-with-lease")
 	} else {
@@ -198,46 +202,132 @@ func CloneInto(repoURL, destDir string) error {
 	return nil
 }
 
-// WorktreeAt returns the absolute path of a worktree linked to the bare repo at bareDir,
-// checking out the given branch. If the worktree already exists, it is reused.
-// The caller is responsible for removing the worktree when done (via git worktree remove).
-func WorktreeAt(bareDir, worktreeDir, branch string, repoURL string) error {
-	// Ensure the bare repo exists.
-	if _, err := os.Stat(bareDir); err != nil {
-		if err := os.MkdirAll(bareDir, 0o755); err != nil {
-			return fmt.Errorf("mkdir bare: %w", err)
-		}
-		// Initialize as a bare repo.
-		if err := exec.Command("git", "init", "--bare", bareDir).Run(); err != nil {
-			return fmt.Errorf("init bare: %w", err)
-		}
-		gr := NewGitRunner(bareDir)
-		if err := gr.SetRemoteOrigin(repoURL); err != nil {
-			return fmt.Errorf("set origin: %w", err)
-		}
-		if err := gr.Fetch(); err != nil {
-			return fmt.Errorf("fetch: %w", err)
-		}
+// BareRepoName derives a safe on-disk name for a repo's bare cache from its
+// URL, so multiple allowlisted repos can share one bareDir without
+// cross-polluting the same cache (D30).
+func BareRepoName(repoURL string) string {
+	name := repoURL
+	name = strings.TrimPrefix(name, "https://")
+	name = strings.TrimPrefix(name, "http://")
+	name = strings.TrimPrefix(name, "git@")
+	name = strings.ReplaceAll(name, ":", "/")
+	name = strings.TrimSuffix(name, ".git")
+	return strings.Trim(name, "/")
+}
+
+// ensureBareRepoInitialised creates and configures the bare repo for repoURL
+// under bareDir, if it is not one yet. An existing but empty directory
+// (e.g. pre-created by MkdirAll) is initialised, not skipped.
+func ensureBareRepoInitialised(bareDir, repoURL string) error {
+	gr := NewGitRunner(bareDir)
+	out, err := gr.Run("rev-parse", "--is-bare-repository")
+	if err == nil && strings.TrimSpace(out) == "true" {
+		return nil
 	}
-	// If the worktree already exists, just check out the branch.
-	if _, err := os.Stat(worktreeDir); err == nil {
-		wt := NewGitRunner(worktreeDir)
-		if err := wt.SetRemoteOrigin(bareDir); err != nil {
-			return fmt.Errorf("set origin: %w", err)
-		}
-		return wt.CheckoutBranch(branch, "")
+	if err := os.MkdirAll(bareDir, 0o755); err != nil {
+		return fmt.Errorf("mkdir bare: %w", err)
 	}
-	// Add the worktree linked to the bare repo.
-	if err := exec.Command("git", "worktree", "add", worktreeDir, branch).Run(); err != nil {
-		return fmt.Errorf("worktree add: %w", err)
+	if err := exec.Command("git", "init", "--bare", bareDir).Run(); err != nil {
+		return fmt.Errorf("init bare: %w", err)
+	}
+	if err := gr.SetRemoteOrigin(repoURL); err != nil {
+		return fmt.Errorf("set origin: %w", err)
 	}
 	return nil
 }
 
-// RemoveWorktree removes the worktree at the given path and prunes it from the bare repo.
-func RemoveWorktree(worktreeDir string) error {
-	if err := exec.Command("git", "worktree", "remove", worktreeDir, "--force").Run(); err != nil {
-		return fmt.Errorf("worktree remove: %w", err)
+// ResolveBaseRef resolves the base ref to check out in a worktree.
+// An empty branch name means "the repo default" — resolved via
+// refs/remotes/origin/HEAD. An explicit branch is returned as
+// "origin/<branch>".
+func ResolveBaseRef(bareDir, branch string) (string, error) {
+	ref := branch
+	if ref == "" {
+		gr := NewGitRunner(bareDir)
+		out, err := gr.Run("symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+		if err != nil {
+			return "", fmt.Errorf("resolve default branch: %w (bare repo may be empty)", err)
+		}
+		ref = strings.TrimSpace(out)
+	} else {
+		ref = "origin/" + ref
+	}
+	return ref, nil
+}
+
+// WorktreeAt creates (or reuses) a DETACHED worktree at worktreeDir on the
+// bare repo in bareDir, checked out at the base ref (origin/<branch> or the
+// resolved default). Detached is deliberate:
+//   - "git worktree add <path> HEAD" fails on a fresh bare repo (HEAD is
+//     not a valid branch name); a branch name fails a second time because
+//     the branch is already used by the first worktree.
+//   - Detached checkouts never conflict: any number of attempts can share
+//     the same base commit. OnSuccess/OnFailure create the real branches
+//     (feature/<ticket_id>-..., debug/<attempt_id>) from HEAD.
+//
+// The worktree's "origin" remote is the bare repo's origin — i.e. the real
+// upstream — because linked worktrees share the bare's remote config.
+func WorktreeAt(bareDir, worktreeDir, branch string, repoURL string) error {
+	if err := ensureBareRepoInitialised(bareDir, repoURL); err != nil {
+		return err
+	}
+	gr := NewGitRunner(bareDir)
+	// Fetch on every prepare, not just first init: a cached base is a stale
+	// base. (The worktree is built from the base commit the agent's branch
+	// will be based on; a stale base silently re-bases the work.)
+	if err := gr.Fetch(); err != nil {
+		return fmt.Errorf("fetch: %w", err)
+	}
+	ref, err := ResolveBaseRef(bareDir, branch)
+	if err != nil {
+		return err
+	}
+
+	if _, err := os.Stat(worktreeDir); err == nil {
+		// Reuse an existing worktree directory (e.g. a retry of the same
+		// attempt_id): just re-check out the base.
+		wt := NewGitRunner(worktreeDir)
+		return wt.RunError("checkout", "--detach", ref)
+	}
+
+	cmd := exec.Command("git", "worktree", "add", "--detach", worktreeDir, ref)
+	cmd.Dir = bareDir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("worktree add: %v: %s", err, out)
+	}
+	return nil
+}
+
+// RemoveWorktree removes the worktree at worktreeDir, running from the
+// bare repo so the worktree admin files are pruned (cmd.Dir is required —
+// without it git resolves the worktree registry relative to the CWD).
+func RemoveWorktree(bareDir, worktreeDir string) error {
+	cmd := exec.Command("git", "worktree", "remove", worktreeDir, "--force")
+	cmd.Dir = bareDir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("worktree remove: %v: %s", err, out)
+	}
+	// Prune stale worktree registrations left by crashes.
+	prune := exec.Command("git", "worktree", "prune")
+	prune.Dir = bareDir
+	_ = prune.Run()
+	return nil
+}
+
+// PushToUpstream pushes a local branch to the upstream remote URL directly,
+// using the token-embedded URL. It does not modify the worktree's git config
+// (no token-bearing remote on disk).
+func PushToUpstream(worktreeDir, upstreamURL, token, branch string) error {
+	pushURL, err := tokenURL(upstreamURL, token)
+	if err != nil {
+		return err
+	}
+	gr := NewGitRunner(worktreeDir)
+	out, err := gr.Run("push", pushURL, "HEAD:refs/heads/"+branch)
+	if err != nil {
+		return fmt.Errorf("push: %v: %s", err, out)
 	}
 	return nil
 }
