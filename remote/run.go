@@ -14,28 +14,28 @@ import (
 type RunStatus string
 
 const (
-	StatusRunning RunStatus = "running"
+	StatusRunning  RunStatus = "running"
 	StatusTerminal RunStatus = "terminal"
 )
 
 // Run is a server-side run record. It owns the runner session and the
 // workspace lifecycle. One run = one agent execution.
 type Run struct {
-	mu              sync.Mutex
-	ID              string
-	AttemptID       string
-	Status          RunStatus
-	StartedAt       time.Time
-	Deadline        time.Time // server-enforced timeout (D17)
-	LastActivity    time.Time
-	Runner          Runner
-	SessionID       SessionID
-	Workspace       Workspace
-	Outcome         *RunResult
-	Cancelled       bool
-	done            chan struct{} // closed when the run reaches a terminal state
-	ctx             context.Context
-	cancel          context.CancelFunc
+	mu               sync.Mutex
+	ID               string
+	AttemptID        string
+	Status           RunStatus
+	StartedAt        time.Time
+	Deadline         time.Time // server-enforced timeout (D17)
+	LastActivity     time.Time
+	Runner           Runner
+	SessionID        SessionID
+	Workspace        Workspace
+	Outcome          *RunResult
+	Cancelled        bool
+	done             chan struct{} // closed when the run reaches a terminal state
+	ctx              context.Context
+	cancel           context.CancelFunc
 	WorkspaceManager *WorkspaceManager
 }
 
@@ -46,18 +46,18 @@ type Run struct {
 func NewRun(attemptID string, runner Runner, ws Workspace, req StartRequest, timeoutSeconds int, wm *WorkspaceManager) (*Run, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	run := &Run{
-		ID:              "run-" + uuid.New().String()[:12],
-		AttemptID:       attemptID,
-		Status:          StatusRunning,
-		StartedAt:       time.Now().UTC(),
-		Deadline:        time.Now().UTC().Add(time.Duration(timeoutSeconds) * time.Second),
-		LastActivity:    time.Now().UTC(),
-		Runner:          runner,
-		Workspace:       ws,
+		ID:               "run-" + uuid.New().String()[:12],
+		AttemptID:        attemptID,
+		Status:           StatusRunning,
+		StartedAt:        time.Now().UTC(),
+		Deadline:         time.Now().UTC().Add(time.Duration(timeoutSeconds) * time.Second),
+		LastActivity:     time.Now().UTC(),
+		Runner:           runner,
+		Workspace:        ws,
 		WorkspaceManager: wm,
-		done:            make(chan struct{}),
-		ctx:             ctx,
-		cancel:          cancel,
+		done:             make(chan struct{}),
+		ctx:              ctx,
+		cancel:           cancel,
 	}
 
 	// Start the agent in the workspace. This is synchronous: the runner
@@ -238,15 +238,15 @@ func stringPtr(s string) *string { return &s }
 // Response payloads matching the wire contract (remote-contract.md §2, §3, §4, §6).
 
 type runResponse struct {
-	Status    string          `json:"status"`
-	RunID     string          `json:"run_id,omitempty"`
+	Status    string           `json:"status"`
+	RunID     string           `json:"run_id,omitempty"`
 	Outcome   *outcomeResponse `json:"outcome,omitempty"`
-	Artifacts []Artifact      `json:"artifacts,omitempty"`
+	Artifacts []Artifact       `json:"artifacts,omitempty"`
 }
 
 type outcomeResponse struct {
-	State   string  `json:"state"`   // completed | failed | timed_out | cancelled
-	Code    *string `json:"code"`    // set when state = failed
+	State   string  `json:"state"` // completed | failed | timed_out | cancelled
+	Code    *string `json:"code"`  // set when state = failed
 	Message string  `json:"message"`
 }
 

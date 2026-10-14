@@ -2,7 +2,6 @@ package stubs
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -56,10 +55,10 @@ type HarnessOutcome struct {
 
 // HarnessArtifact represents an artifact produced by a run.
 type HarnessArtifact struct {
-	Kind          string  `json:"kind"`           // comment, pull_request, branch, report, log
-	BranchPurpose *string `json:"branch_purpose"` // feature, debug (only for kind=branch)
-	URI           string  `json:"uri"`
-	Body          string  `json:"body,omitempty"` // only for kind=comment
+	Kind          string           `json:"kind"`           // comment, pull_request, branch, report, log
+	BranchPurpose *string          `json:"branch_purpose"` // feature, debug (only for kind=branch)
+	URI           string           `json:"uri"`
+	Body          string           `json:"body,omitempty"`     // only for kind=comment
 	Findings      []HarnessFinding `json:"findings,omitempty"` // for kind=report
 }
 
@@ -414,43 +413,45 @@ func (s *HarnessServer) handleRunByID(w http.ResponseWriter, r *http.Request) {
 func (s *HarnessServer) handleGetRun(w http.ResponseWriter, r *http.Request, run *HarnessRun) {
 	w.Header().Set("Content-Type", "application/json")
 
-	if run.Status == "running" {
-		// Return running status with logs
-		logOffset := 0
-		if v := w.Header().Get("X-Log-Offset"); v != "" {
-			fmt.Sscanf(v, "%d", &logOffset)
+	// Enforce server-side timeout (contract §4): the stub must kill runs
+	// when timeout_seconds elapses, so C3 genuinely tests server-side kill.
+	s.State.mu.Lock()
+	if run.Status == "running" && run.TimeoutSeconds > 0 {
+		if time.Since(run.StartedAt) >= time.Duration(run.TimeoutSeconds)*time.Second {
+			run.Status = "terminal"
+			run.Outcome = &HarnessOutcome{
+				State:   "timed_out",
+				Message: "server timeout",
+			}
+			run.LastActivityAt = time.Now().UTC()
+			run.Artifacts = []HarnessArtifact{} // no artifacts on timeout
 		}
-		// Also check query param
-		if v := r.URL.Query().Get("log_offset"); v != "" {
-			fmt.Sscanf(v, "%d", &logOffset)
-		}
-
-		nextOffset := logOffset
-		var logs []string
-		if logOffset < len(run.Logs) {
-			logs = run.Logs[logOffset:]
-			nextOffset = len(run.Logs)
-		}
-
-		json.NewEncoder(w).Encode(map[string]any{
-			"status":           "running",
-			"last_activity_at": run.LastActivityAt.Format(time.RFC3339Nano),
-			"next_log_offset":  nextOffset,
-			"logs":             logs,
-		})
-	} else {
-		// Terminal
-		resp := map[string]any{
-			"status": "terminal",
-			"outcome": map[string]any{
-				"state":   run.Outcome.State,
-				"code":    run.Outcome.Code,
-				"message": run.Outcome.Message,
-			},
-			"artifacts": run.Artifacts,
-		}
-		json.NewEncoder(w).Encode(resp)
 	}
+	s.State.mu.Unlock()
+
+	if run.Status == "running" {
+		// The real adapter only consumes "status".  The contract §5 defines
+		// last_activity_at/next_log_offset/logs for progress, but the MVP
+		// RemoteHarness ignores them — it polls only for "status == terminal".
+		// Return the minimal shape the adapter actually checks to keep the
+		// stub aligned with production behaviour.
+		json.NewEncoder(w).Encode(map[string]any{
+			"status": "running",
+		})
+		return
+	}
+
+	// Terminal response — matches the runResponse shape consumed by the adapter.
+	resp := map[string]any{
+		"status": "terminal",
+		"outcome": map[string]any{
+			"state":   run.Outcome.State,
+			"code":    run.Outcome.Code,
+			"message": run.Outcome.Message,
+		},
+		"artifacts": run.Artifacts,
+	}
+	json.NewEncoder(w).Encode(resp)
 }
 
 func (s *HarnessServer) handleDeleteRun(w http.ResponseWriter, runID string) {

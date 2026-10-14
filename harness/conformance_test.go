@@ -161,8 +161,8 @@ func TestConformanceC2_AbortRunningRun(t *testing.T) {
 }
 
 // TestConformanceC3_TimeoutServerKill tests that when a run exceeds timeout_seconds,
-// the server kills it server-side. Since the #16 stub server does not auto-enforce
-// timeout_seconds, we manually complete the run with a timed_out outcome after waiting,
+// the server kills it server-side. The stub now auto-enforces timeout_seconds,
+// so the test verifies the server-side kill path without manual completion.
 func TestConformanceC3_TimeoutServerKill(t *testing.T) {
 	// the adapter's outcome mapping handles timed_out → timeout correctly.
 	state := stubs.NewHarnessState("stub-model")
@@ -182,14 +182,9 @@ func TestConformanceC3_TimeoutServerKill(t *testing.T) {
 		t.Fatal("C3: failed to start run")
 	}
 
-	// Wait for the expected timeout to elapse, then manually mark the run
-	// as timed_out since the stub server does not auto-enforce timeouts.
+	// Wait for the expected timeout to elapse; the stub should auto-terminate
+	// the run server-side without any manual CompleteRun call.
 	time.Sleep(2 * time.Second)
-	state.CompleteRun(rid,
-		&stubs.HarnessOutcome{State: "timed_out"},
-		[]stubs.HarnessArtifact{
-			{Kind: "log", URI: "artifact-store/" + rid + "/run.log"},
-		})
 
 	result := getRun(t, base, rid)
 	outcome, ok := result["outcome"].(map[string]any)
@@ -334,9 +329,9 @@ func TestConformanceC6_401403404(t *testing.T) {
 
 	for _, code := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound} {
 		state.SetFail(&stubs.FailConfig{
-			Method: http.MethodPost,
-			Path:   "/v1/runs",
-			Status: code,
+			Method:  http.MethodPost,
+			Path:    "/v1/runs",
+			Status:  code,
 			Message: "refused",
 		})
 		_, err := h.Start(context.Background(), startReq("c6"))
@@ -359,10 +354,10 @@ func TestConformanceC7_422BudgetExceeded(t *testing.T) {
 		h := NewRemoteHarness(server.URL(), "")
 
 		state.SetFail(&stubs.FailConfig{
-			Method: http.MethodPost,
-			Path:   "/v1/runs",
-			Status: http.StatusUnprocessableEntity,
-			Code:   "budget_exceeded",
+			Method:  http.MethodPost,
+			Path:    "/v1/runs",
+			Status:  http.StatusUnprocessableEntity,
+			Code:    "budget_exceeded",
 			Message: "budget 5000 exceeds ceiling",
 		})
 		_, err := h.Start(context.Background(), startReq("c7a"))
@@ -384,10 +379,10 @@ func TestConformanceC7_422BudgetExceeded(t *testing.T) {
 
 		// The run exists and is running; now refuse every GET for it with 422.
 		state.SetFail(&stubs.FailConfig{
-			Method: http.MethodGet,
-			Path:   "/v1/runs/" + string(rid),
-			Status: http.StatusUnprocessableEntity,
-			Code:   "budget_exceeded",
+			Method:  http.MethodGet,
+			Path:    "/v1/runs/" + string(rid),
+			Status:  http.StatusUnprocessableEntity,
+			Code:    "budget_exceeded",
 			Message: "budget 5000 exceeds ceiling",
 		})
 

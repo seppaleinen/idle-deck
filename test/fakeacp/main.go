@@ -40,8 +40,8 @@ func main() {
 			continue
 		}
 		var req struct {
-			ID     *int           `json:"id"`
-			Method string         `json:"method"`
+			ID     *int            `json:"id"`
+			Method string          `json:"method"`
 			Params json.RawMessage `json:"params"`
 		}
 		if json.Unmarshal([]byte(line), &req) != nil {

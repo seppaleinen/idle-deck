@@ -3,9 +3,9 @@ package dashboard
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"encoding/json"
 	"testing"
 
 	"github.com/seppaleinen/idle-deck/config"
@@ -47,6 +47,7 @@ func TestServer_Smoke(t *testing.T) {
 }
 
 var _ = sql.ErrNoRows
+
 func TestServer_Tasks(t *testing.T) {
 	dbPath := t.TempDir() + "/idle-deck.db"
 	ctx := context.Background()
@@ -78,10 +79,10 @@ func TestServer_Tasks(t *testing.T) {
 	defer srv.Close()
 
 	tests := []struct {
-		path        string
-		wantStatus  int
-		wantTotal   int
-		wantTasks   int
+		path       string
+		wantStatus int
+		wantTotal  int
+		wantTasks  int
 	}{
 		{"/api/tasks", http.StatusOK, 2, 2},
 		{"/api/tasks?state=succeeded", http.StatusOK, 1, 1},

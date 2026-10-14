@@ -177,12 +177,15 @@ func (h *RemoteHarness) Abort(ctx context.Context, id RunID) error {
 // Result blocks until the run is terminal and returns its outcome and artifacts.
 // Polls GET /v1/runs/{id} until terminal (status=terminal), no SSE in MVP.
 //
+// Polling contract: the adapter polls internally with a hard 24h safety cap
+// (the server enforces timeout_seconds per §3). On retryable HTTP errors
+// (429, 5xx) the adapter returns immediately with a typed error so the
+// worker's own backoff governs retries — the adapter does not loop on
+// error responses. Only transient network errors are retried inside Result.
 // §7 is applied at the transport: a 429 or 5xx mid-poll maps to
-// retryable_failure (and returns immediately — the adapter does not loop on
-// an error response; the worker re-queues the task and the next attempt
-// re-polls), and a 404 maps to non_retryable_failure (unknown run id
-// implies lost state; escalating beats looping). Only transient network
-// errors continue polling with backoff.
+// retryable_failure (returned immediately), and a 404 maps to
+// non_retryable_failure (unknown run id implies lost state; escalating
+// beats looping). Only transient network errors continue polling with backoff.
 func (h *RemoteHarness) Result(ctx context.Context, id RunID) (RunResult, error) {
 	url := h.baseURL + "/v1/runs/" + string(id)
 
@@ -232,7 +235,10 @@ func (h *RemoteHarness) Result(ctx context.Context, id RunID) (RunResult, error)
 
 			if runResp.Status == "terminal" {
 				outcome := AttemptOutcome(mapWireOutcome(runResp.Outcome.State, runResp.Outcome.Code))
-				artifacts := mapWireArtifacts(runResp)
+				artifacts := runResp.Artifacts
+				if len(artifacts) == 0 {
+					artifacts = nil
+				}
 				return RunResult{
 					Outcome:   outcome,
 					Artifacts: artifacts,
@@ -254,15 +260,6 @@ func (h *RemoteHarness) Result(ctx context.Context, id RunID) (RunResult, error)
 			return result, newHarnessError(resp.StatusCode, raw)
 		}
 	}
-}
-
-// mapWireArtifacts converts the wire run response into a slice of Artifact.
-func mapWireArtifacts(runResp runResponse) []Artifact {
-	// The artifacts field is populated from the terminal GET response.
-	if len(runResp.Artifacts) == 0 {
-		return nil
-	}
-	return runResp.Artifacts
 }
 
 // Health was the harness package's own /health implementation. It is removed:
