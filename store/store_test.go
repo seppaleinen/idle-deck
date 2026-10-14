@@ -114,6 +114,41 @@ func TestLeaseExpiryRecordsTimeout(t *testing.T) {
 	// The task is re-claimed by the second Dequeue, so state is 'running'.
 	// The important assertion is that attempt 1 outcome is 'timeout'.
 }
+// TestEnqueueIdempotentSameKeyDifferentID is the real invariant: two tasks
+// with the same dedupe_key but different IDs must not coexist. The existing
+// TestEnqueueIdempotent only enqueues the same task twice, which exercises the
+// primary-key path; this one exercises the dedupe-key path that the
+// boundaries contract requires (boundaries.md §2).
+func TestEnqueueIdempotentSameKeyDifferentID(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// Same dedupe_key, different IDs — the second must be ignored.
+	if err := s.Enqueue(ctx, makeTask(t, "t1", queue.TierP2, "sharedkey")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Enqueue(ctx, makeTask(t, "t2", queue.TierP0, "sharedkey")); err != nil {
+		t.Fatal(err)
+	}
+
+	var count int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM tasks WHERE dedupe_key = ?`, "sharedkey").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Errorf("expected 1 task with dedupe_key, got %d — Enqueue must be idempotent per key regardless of task ID", count)
+	}
+
+	// The surviving task is the first one enqueued.
+	var id string
+	if err := s.db.QueryRowContext(ctx, `SELECT id FROM tasks WHERE dedupe_key = ?`, "sharedkey").Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	if id != "t1" {
+		t.Errorf("surviving task = %q, want t1 (first enqueue wins)", id)
+	}
+}
+
 func TestEnqueueIdempotent(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
@@ -209,18 +244,27 @@ func TestMigrationsForwardOnly(t *testing.T) {
 	}
 	defer db.Close()
 
-	// Create an old schema (v1 without v2/v3 additions)
+	// Create an old schema matching the actual v1 (without v2/v3/v4+ additions).
+	// This is NOT a fantasy minimal schema — it matches what v1 produces so that
+	// migrations v2-v9 see the columns they expect.
 	_, err = db.ExecContext(ctx, `
 CREATE TABLE tasks (
-	id TEXT PRIMARY KEY,
-	repository_id TEXT NOT NULL,
-	tier TEXT NOT NULL,
-	prompt TEXT NOT NULL,
-	state TEXT NOT NULL DEFAULT 'queued',
-	event_type TEXT NOT NULL,
-	dedupe_key TEXT NOT NULL,
-	received_at INTEGER NOT NULL DEFAULT 0,
-	created_at INTEGER NOT NULL DEFAULT 0
+	id               TEXT PRIMARY KEY,
+	repository_id    TEXT NOT NULL,
+	ticket_tracker   TEXT NOT NULL,
+	ticket_repo_id   TEXT NOT NULL,
+	ticket_external_id  TEXT NOT NULL,
+	ticket_url       TEXT NOT NULL,
+	tier             TEXT NOT NULL,
+	prompt           TEXT NOT NULL,
+	payload          TEXT NOT NULL DEFAULT '',
+	timeout_seconds  INTEGER NOT NULL DEFAULT 0,
+	budget           INTEGER NOT NULL DEFAULT 0,
+	state            TEXT NOT NULL DEFAULT 'queued',
+	event_type       TEXT NOT NULL,
+	dedupe_key       TEXT NOT NULL,
+	received_at      INTEGER NOT NULL DEFAULT 0,
+	created_at       INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX idx_tasks_dedupe ON tasks (dedupe_key);
 `)
@@ -228,7 +272,7 @@ CREATE INDEX idx_tasks_dedupe ON tasks (dedupe_key);
 		t.Fatal(err)
 	}
 
-	_, err = db.ExecContext(ctx, `INSERT INTO tasks (id, repository_id, tier, prompt, state, event_type, dedupe_key, received_at, created_at) VALUES ('old', 'repo', 'P2', 'old', 'queued', 'test', 'oldkey', 1, 1)`)
+	_, err = db.ExecContext(ctx, `INSERT INTO tasks (id, repository_id, ticket_tracker, ticket_repo_id, ticket_external_id, ticket_url, tier, prompt, state, event_type, dedupe_key, received_at, created_at) VALUES ('old', 'repo', 'gh', 'repo', '1', 'https://x/1', 'P2', 'old', 'queued', 'test', 'oldkey', 1, 1)`)
 	if err != nil {
 		t.Fatal(err)
 	}

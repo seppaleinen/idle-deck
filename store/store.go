@@ -19,7 +19,7 @@ func dsn(path string) string {
 	return path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode=WAL"
 }
 
-const SchemaVersion = 8
+const SchemaVersion = 9
 
 const v1Schema = `
 CREATE TABLE IF NOT EXISTS repositories (
@@ -134,6 +134,60 @@ const v8AddWatermarkETag = `
 ALTER TABLE tracker_watermarks ADD COLUMN etag TEXT;
 `
 
+// v9AddUniqueDedupeKey enforces the idempotency invariant: Enqueue is
+// idempotent per dedupe_key, so two tasks with the same key must not coexist.
+// SQLite cannot ALTER TABLE ADD CONSTRAINT, so the tasks table is rebuilt:
+// copy existing rows (INSERT OR IGNORE keeps the first occurrence of each
+// key) into a new table carrying the UNIQUE constraint, then swap.
+//
+// Column list is explicit (not SELECT *) so the migration is robust against
+// a truncated pre-v1 schema (e.g. test fixtures that omit unused columns).
+const v9AddUniqueDedupeKey = `
+CREATE TABLE tasks_new (
+	id               TEXT PRIMARY KEY,
+	repository_id    TEXT NOT NULL,
+	ticket_tracker   TEXT NOT NULL,
+	ticket_repo_id   TEXT NOT NULL,
+	ticket_external_id  TEXT NOT NULL,
+	ticket_url       TEXT NOT NULL,
+	tier             TEXT NOT NULL,
+	prompt           TEXT NOT NULL,
+	payload          TEXT NOT NULL DEFAULT '',
+	timeout_seconds  INTEGER NOT NULL DEFAULT 0,
+	budget           INTEGER NOT NULL DEFAULT 0,
+	state            TEXT NOT NULL DEFAULT 'queued',
+	event_type       TEXT NOT NULL,
+	dedupe_key       TEXT NOT NULL,
+	received_at      INTEGER NOT NULL DEFAULT 0,
+	created_at       INTEGER NOT NULL DEFAULT 0,
+	triggered_by_event_type TEXT NOT NULL DEFAULT '',
+	triggered_by_dedupe_key TEXT NOT NULL DEFAULT '',
+	triggered_by_received_at INTEGER NOT NULL DEFAULT 0,
+	derived_from     TEXT,
+	CONSTRAINT unique_dedupe_key UNIQUE (dedupe_key)
+);
+INSERT OR IGNORE INTO tasks_new (id, repository_id, ticket_tracker, ticket_repo_id,
+	ticket_external_id, ticket_url, tier, prompt, payload, timeout_seconds,
+	budget, state, event_type, dedupe_key, received_at, created_at,
+	triggered_by_event_type, triggered_by_dedupe_key, triggered_by_received_at,
+	derived_from)
+SELECT id, repository_id,
+	COALESCE(ticket_tracker, ''), COALESCE(ticket_repo_id, ''),
+	COALESCE(ticket_external_id, ''), COALESCE(ticket_url, ''),
+	tier, prompt, COALESCE(payload, ''),
+	COALESCE(timeout_seconds, 0), COALESCE(budget, 0),
+	COALESCE(state, 'queued'), COALESCE(event_type, ''),
+	dedupe_key, COALESCE(received_at, 0), COALESCE(created_at, 0),
+	COALESCE(triggered_by_event_type, ''), COALESCE(triggered_by_dedupe_key, ''),
+	COALESCE(triggered_by_received_at, 0),
+	derived_from
+FROM tasks;
+DROP TABLE tasks;
+ALTER TABLE tasks_new RENAME TO tasks;
+CREATE INDEX IF NOT EXISTS idx_tasks_dedupe ON tasks (dedupe_key);
+CREATE INDEX IF NOT EXISTS idx_tasks_state_tier ON tasks (state, tier);
+`
+
 type migration struct {
 	version int
 	sql     string
@@ -148,6 +202,7 @@ var migrations = []migration{
 	{version: 6, sql: v6AddHeartbeat},
 	{version: 7, sql: v7AddDashboardActions},
 	{version: 8, sql: v8AddWatermarkETag},
+	{version: 9, sql: v9AddUniqueDedupeKey},
 }
 
 // CurrentVersion returns the schema version recorded in the database.
