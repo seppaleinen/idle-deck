@@ -267,7 +267,7 @@ Per allowlisted repository, per tick:
 | 1 | `GET /repos/{o}/{r}/issues?state=open&labels=idle-hotfix&since=W` | P0 candidates |
 | 2 | `…&labels=idle-ready&since=W` | P2 candidates |
 | 3 | `…&labels=idle-redo&since=W` | Redefinition candidates |
-| 4 | `GET /repos/{o}/{r}/issues?state=open&sort=updated&direction=asc&since=W&per_page=100` | P1 candidates (`created_at > W`, bots excluded) |
+| 4 | `GET /repos/{o}/{r}/issues?state=open&since=W&per_page=100` | P1 candidates (`created_at > W`, bots excluded) |
 | — | P3 scheduler — no query | P3 |
 
 Every response is filtered for the `pull_request` key: **the issues endpoint returns pull requests as
@@ -275,11 +275,14 @@ issues, and a pull request is not a task.** `state=open` throughout, so a closed
 
 Passing `since=W` on the three label queries as well as the watermark query lets one cursor do double
 duty — detecting new issues *and* label changes — so a labelled-but-unchanged issue is not even
-returned. Both parameters are documented on the same endpoint with no stated exclusion, but the
-*combination's behaviour* is an assumption to verify in the
-[#10](https://github.com/seppaleinen/idle-deck/issues/10) adapter spec. If it turns out `since` does
-not compose with `labels`, the unconditional label query plus the dedupe key is still **correct** — it
-is only chattier. One label is passed per query, so GitHub's multi-label AND/OR semantics never arise.
+returned. **Verified against the live API:** `since` and `labels` compose with AND semantics — the
+result is issues carrying one of the labels *and* updated at or after `W`. Label changes bump
+`updated_at` (the `labeled` event moves it), so a relabelled issue is surfaced by `since` and
+correctly matched by its label query. One label is passed per query, so GitHub's multi-label AND/OR
+semantics never arise.
+
+The fallback named below ("if `since` does not compose with `labels`") was retained as a defensive
+position while the behaviour was unverified; it is no longer needed, since the composition holds.
 
 **Never handled:** `issue_comment` (comments are output only; no conversational instruction channel),
 `pull_request` (idle-deck opens Draft PRs and never reviews them, D22), `ping` and webhook health
