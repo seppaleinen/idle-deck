@@ -104,8 +104,8 @@ type errorBody struct {
 	Message string `json:"message"`
 }
 
-// HealthResponse represents the /health endpoint response.
-type HealthResponse struct {
-	Reachable bool   `json:"reachable"`
-	Model     string `json:"model"`
-}
+// /health response shape lives in the remote package
+// (remote/healthResponse), and the sole consumer is idle.HarnessIdlePolicy
+// (idle/idle.go). The harness package carries no health type: D31 defines one
+// probe, one producer, and one consumer, and duplicating the shape here is
+// what let three implementations drift apart. (Architecture audit H6.)

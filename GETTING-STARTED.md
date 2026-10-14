@@ -91,7 +91,7 @@ Set the following environment variables:
 | `IDLE_DECK_REMOTE_BASE_DIR` | Directory for worktrees (e.g. `/tmp/idle-deck-work`) |
 | `IDLE_DECK_REMOTE_GIT_TOKEN` | **Repo-scoped** personal access token for git operations (push, PR creation). Needs `Contents: Read and write` + `Metadata: Read-only`. |
 | `IDLE_DECK_REMOTE_HTTP_TOKEN` | Bearer token for the HTTP server (must match what idle-deck sends). For local dev you can set any non-empty string. |
-| `IDLE_DECK_REMOTE_ROLE_TO_MODEL` | JSON mapping of role to model name, e.g. `'{"plan":"opencode/big-pickle","do":"opencode/big-pickle","sweep":"opencode/big-pickle"}'` |
+| `IDLE_DECK_REMOTE_ROLE_TO_MODEL` | **Required.** JSON mapping of role to model name, e.g. `'{"plan":"<your-model>","do":"<your-model>","sweep":"<your-model>"}'`. The remote ships no default model mapping (D6/D40: idle-deck never names a model, provider, or vendor; D46: the agent model is operator config, not a build-time choice) — if this is unset the remote **refuses to start** with a clear error. |
 
 Then start the server:
 

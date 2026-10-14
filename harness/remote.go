@@ -265,40 +265,10 @@ func mapWireArtifacts(runResp runResponse) []Artifact {
 	return runResp.Artifacts
 }
 
-// Health checks the remote service model reachability per D31.
-// GET /health returns reachability, not process liveness.
-func (h *RemoteHarness) Health(ctx context.Context) (bool, string, error) {
-	url := h.baseURL + "/health"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return false, "", fmt.Errorf("create health request: %w", err)
-	}
-	h.withAuth(req)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		// Network error — service unreachable
-		return false, "", fmt.Errorf("health: network error: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return false, "", fmt.Errorf("health: read body: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return false, "", fmt.Errorf("health: unexpected status %d", resp.StatusCode)
-	}
-
-	var healthResp HealthResponse
-	if err := json.Unmarshal(body, &healthResp); err != nil {
-		return false, "", fmt.Errorf("health: decode response: %w", err)
-	}
-
-	// Per D31: "if it answers, the engine is considered idle"
-	// "Must reflect model reachability, not merely process liveness"
-	// If the endpoint answers with reachable=true, the service is reachable.
-	// The Model field identifies which model is available.
-	return healthResp.Reachable, healthResp.Model, nil
-}
+// Health was the harness package's own /health implementation. It is removed:
+// D31 defines exactly one idle probe, the remote server's GET /health
+// (remote/server.go handleHealth, produced by cmd/remote/health.go), and the
+// sole consumer is idle.HarnessIdlePolicy (idle/idle.go). This method was dead
+// code — never wired into the worker, never called by any test — and it
+// duplicated a third response shape, so keeping it invited drift on the
+// contract D31 pins. (Architecture audit H6, M11.)

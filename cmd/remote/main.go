@@ -68,18 +68,21 @@ func main() {
 		// We'll allow empty but warn.
 		log.Print("WARN: IDLE_DECK_REMOTE_HTTP_TOKEN is empty; server will not enforce auth")
 	}
+	// RoleToModel is operator config, not a build-time choice (D46). The
+	// default is nil (D6/D40: idle-deck never names a model, provider, or
+	// vendor), so the operator MUST supply IDLE_DECK_REMOTE_ROLE_TO_MODEL.
+	// A missing value is a hard failure, not a silent wrong model — the
+	// wrapper would otherwise run against a model the operator never chose.
 	roleToModelJSON := os.Getenv("IDLE_DECK_REMOTE_ROLE_TO_MODEL")
-	var roleToModel map[string]string
 	if roleToModelJSON == "" {
-		roleToModel = map[string]string{
-			"plan":   "opencode/big-pickle",
-			"do":     "opencode/big-pickle",
-			"sweep": "opencode/big-pickle",
-		}
-	} else {
-		if err := json.Unmarshal([]byte(roleToModelJSON), &roleToModel); err != nil {
-			log.Fatalf("Invalid JSON in IDLE_DECK_REMOTE_ROLE_TO_MODEL: %v", err)
-		}
+		log.Fatal("IDLE_DECK_REMOTE_ROLE_TO_MODEL is required: the remote agent model mapping is operator config, not a build-time choice (D6/D40/D46)")
+	}
+	var roleToModel map[string]string
+	if err := json.Unmarshal([]byte(roleToModelJSON), &roleToModel); err != nil {
+		log.Fatalf("Invalid JSON in IDLE_DECK_REMOTE_ROLE_TO_MODEL: %v", err)
+	}
+	if len(roleToModel) == 0 {
+		log.Fatal("IDLE_DECK_REMOTE_ROLE_TO_MODEL is required: the remote agent model mapping is operator config, not a build-time choice (D6/D40/D46)")
 	}
 	listenAddr := os.Getenv("IDLE_DECK_REMOTE_LISTEN_ADDR")
 	if listenAddr == "" {
@@ -99,7 +102,11 @@ func main() {
 	// runs against a dead model. The probe drives a real ACP round-trip
 	// through the SAME agent CLI the runner uses (cfg.Bin/Args/Env); see
 	// cmd/remote/health.go.
-	probeModel := "opencode/big-pickle"
+	// The probe reports the first configured role model in the /health
+	// response. It is derived from the operator's mapping (D46), never
+	// hardcoded: idle-deck never names a model, provider, or vendor
+	// (D6/D40), so the wrapper must not ship a model name of its own.
+	probeModel := ""
 	for _, m := range roleToModel {
 		if m != "" {
 			probeModel = m

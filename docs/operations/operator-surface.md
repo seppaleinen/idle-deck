@@ -151,6 +151,7 @@ override one value for one run without editing anything.
 | `IDLE_DECK_REPOS` | Comma-separated `owner/repo` list. **This list is the allowlist** (D30), checked again at ingestion (I1). |
 | `IDLE_DECK_HARNESS_URL` | Base URL of the remote execution service. |
 | `IDLE_DECK_HARNESS_TOKEN` | Bearer token for that service (D27). |
+| `IDLE_DECK_REMOTE_ROLE_TO_MODEL` | **Required on the remote.** JSON mapping of role → model name, e.g. `'{"plan":"<model>","do":"<model>","sweep":"<model>"}'`. The remote ships no default model mapping (D6/D40: idle-deck never names a model, provider, or vendor; D46: the agent model is operator config, not a build-time choice) — if this is unset the remote **refuses to start** with a clear error naming the variable. It is listed here rather than §4's remote table because it is a hard failure, not a default. |
 
 ### Defaults — every one of these can be left alone
 
@@ -210,7 +211,9 @@ The harness (`idle-deck-remote`) is configured with `IDLE_DECK_REMOTE_*` env
 vars. The most operator-visible of these are the ACP agent launch recipe.
 The agent CLI is operator config, not a build-time choice (D46): the binary
 baked into the image is a default, the operator picks the agent at deploy
-time.
+time. `IDLE_DECK_REMOTE_ROLE_TO_MODEL` is **required** (see §4) — the remote
+ships no model mapping, so the operator names the model at deploy time rather
+than the wrapper naming one by default (D6/D40).
 
 | Variable | Default | Meaning |
 |---|---|---|

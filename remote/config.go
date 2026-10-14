@@ -30,18 +30,19 @@ type Config struct {
 }
 
 // DefaultConfig returns a configuration with sensible defaults.
-// The RoleToModel mapping should be customized by the operator.
+//
+// RoleToModel is nil by default. It is operator config, not a build-time
+// choice (D46): idle-deck never names a model, provider, or vendor (D6/D40),
+// so the wrapper ships no model mapping and the operator supplies it via
+// IDLE_DECK_REMOTE_ROLE_TO_MODEL. NewServer's caller (cmd/remote/main.go)
+// fails fast when it is missing rather than silently running against a
+// wrong model.
 func DefaultConfig(bareDir, baseDir, gitHubToken string) *Config {
 	return &Config{
-		RoleToModel: map[string]string{
-			"plan":  "opencode/big-pickle",
-			"do":    "opencode/big-pickle",
-			"sweep": "opencode/big-pickle",
-		},
-		GitHubToken:   gitHubToken,
-		HTTPTimeout:     30 * time.Second,
-		WorktreeTTL:     24 * time.Hour,
-		GitHubAPIToken:  "", // same as GitHubToken if empty
+		GitHubToken:    gitHubToken,
+		HTTPTimeout:    30 * time.Second,
+		WorktreeTTL:    24 * time.Hour,
+		GitHubAPIToken: "", // same as GitHubToken if empty
 		WorkspaceManager: NewWorkspaceManager(bareDir, baseDir, gitHubToken),
 	}
 }
