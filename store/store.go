@@ -19,7 +19,7 @@ func dsn(path string) string {
 	return path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode=WAL"
 }
 
-const SchemaVersion = 7
+const SchemaVersion = 8
 
 const v1Schema = `
 CREATE TABLE IF NOT EXISTS repositories (
@@ -130,6 +130,10 @@ CREATE TABLE IF NOT EXISTS dashboard_actions (
 CREATE INDEX IF NOT EXISTS idx_dashboard_actions_status ON dashboard_actions (status);
 `
 
+const v8AddWatermarkETag = `
+ALTER TABLE tracker_watermarks ADD COLUMN etag TEXT;
+`
+
 type migration struct {
 	version int
 	sql     string
@@ -143,6 +147,7 @@ var migrations = []migration{
 	{version: 5, sql: v5AddTrackerPolls},
 	{version: 6, sql: v6AddHeartbeat},
 	{version: 7, sql: v7AddDashboardActions},
+	{version: 8, sql: v8AddWatermarkETag},
 }
 
 // CurrentVersion returns the schema version recorded in the database.

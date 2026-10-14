@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"sync"
@@ -539,6 +540,12 @@ type WatermarkStore interface {
 	// Save upserts the watermark for the given repo.
 	// The watermark is advanced to the tick start (event-contract §2).
 	Save(ctx context.Context, repo string, t time.Time) error
+	// LoadETag returns the ETag string for a specific query type within a repo.
+	// Returns empty string if no ETag has been stored.
+	LoadETag(ctx context.Context, repo string, queryID string) (string, error)
+	// SaveETag persists the ETag for a specific query type within a repo.
+	// The ETag is stored alongside the watermark.
+	SaveETag(ctx context.Context, repo string, queryID string, etag string) error
 }
 
 // SQLiteWatermarks implements WatermarkStore using the tracker_watermarks table.
@@ -578,6 +585,59 @@ ON CONFLICT(repo) DO UPDATE SET
 		repo, t.Format(time.RFC3339Nano), w.now().UnixNano())
 	if err != nil {
 		return fmt.Errorf("watermark: save: %w", err)
+	}
+	return nil
+}
+
+func (w *SQLiteWatermarks) LoadETag(ctx context.Context, repo string, queryID string) (string, error) {
+	var etagJSON sql.NullString
+	err := w.db.QueryRowContext(ctx,
+		`SELECT etag FROM tracker_watermarks WHERE repo = ?`, repo).Scan(&etagJSON)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("watermark: load etag: %w", err)
+	}
+	if !etagJSON.Valid || etagJSON.String == "" {
+		return "", nil
+	}
+	var etags map[string]string
+	if err := json.Unmarshal([]byte(etagJSON.String), &etags); err != nil {
+		return "", fmt.Errorf("watermark: parse etag json: %w", err)
+	}
+	return etags[queryID], nil
+}
+
+func (w *SQLiteWatermarks) SaveETag(ctx context.Context, repo string, queryID string, etag string) error {
+	if etag == "" {
+		return nil
+	}
+	// Load existing etags
+	var etagJSON sql.NullString
+	err := w.db.QueryRowContext(ctx,
+		`SELECT etag FROM tracker_watermarks WHERE repo = ?`, repo).Scan(&etagJSON)
+	
+	etags := make(map[string]string)
+	if err == nil && etagJSON.Valid && etagJSON.String != "" {
+		if err := json.Unmarshal([]byte(etagJSON.String), &etags); err == nil {
+			// use existing
+		}
+	} else if err != nil && err != sql.ErrNoRows {
+		return fmt.Errorf("watermark: load etag for save: %w", err)
+	}
+	
+	etags[queryID] = etag
+	updatedJSON, err := json.Marshal(etags)
+	if err != nil {
+		return fmt.Errorf("watermark: marshal etag json: %w", err)
+	}
+	
+	_, err = w.db.ExecContext(ctx, `
+UPDATE tracker_watermarks SET etag = ? WHERE repo = ?`,
+		string(updatedJSON), repo)
+	if err != nil {
+		return fmt.Errorf("watermark: save etag: %w", err)
 	}
 	return nil
 }

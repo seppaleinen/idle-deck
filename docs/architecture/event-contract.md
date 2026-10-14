@@ -41,9 +41,11 @@ The properties this buys, in the order they mattered:
    P0 preemption (D16).
 
 **Cost.** Per repository per tick: four queries (§8), mostly returning nothing. At the default 60s
-across five repositories that is ~1,200 requests/hour against a 5,000/hour budget. Conditional
-requests cut it much lower — a tick that finds nothing changed returns `304`, which **does not consume
-primary rate limit** — so the cadence is not a tax. Two secondary limits are respected by
+across five repositories that is ~1,200 requests/hour against a 5,000/hour budget without conditional
+requests. Conditional requests reduce this cost — a tick that finds nothing changed returns `304`, which
+**does not consume primary rate limit** — so the cadence is not a tax. Conditional requests are now
+implemented (ETags stored per query type, `If-None-Match` sent on each request, 304 stops pagination
+and skips remaining queries for the tick). Two secondary limits are respected by
 construction: 900 points/minute (a `GET` is 1, a write is 5) and 500 content-generating requests/hour
 (comments and label writes).
 

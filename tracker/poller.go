@@ -164,15 +164,20 @@ func (p *Poller) pollRepo(ctx context.Context, repo string, tickStart time.Time)
 	}
 
 	for _, q := range queries {
-		if err := p.runQuery(ctx, repo, wm, q.trigger, q.tier, q.isWatermark); err != nil {
+		notModified, err := p.runQuery(ctx, repo, wm, q.trigger, q.tier, q.isWatermark)
+		if err != nil {
 			return err
+		}
+		// Skip remaining queries if this one returned 304 — repo is quiet
+		if notModified {
+			break
 		}
 	}
 	return nil
 }
 
 // runQuery executes one paginated query and enqueues candidates.
-func (p *Poller) runQuery(ctx context.Context, repo string, since time.Time, trigger string, tier queue.TaskTier, isWatermark bool) error {
+func (p *Poller) runQuery(ctx context.Context, repo string, since time.Time, trigger string, tier queue.TaskTier, isWatermark bool) (bool, error) {
 	owner, repoName := splitRepo(repo)
 	endpoint := fmt.Sprintf("%s/repos/%s/%s/issues", p.gh.apiURL, owner, repoName)
 
@@ -180,12 +185,15 @@ func (p *Poller) runQuery(ctx context.Context, repo string, since time.Time, tri
 	params.Set("state", "open")
 	params.Set("since", since.Format(time.RFC3339))
 	if isWatermark {
-		params.Set("sort", "updated")
-		params.Set("direction", "asc")
 		params.Set("per_page", "100")
+		// Note: sort=updated&direction=asc dropped to make ETags stable (sort changes ETag when issues update).
 	} else {
 		params.Set("labels", trigger)
 	}
+
+	// Load ETag for conditional request
+	etag, _ := p.wm.LoadETag(ctx, repo, trigger)
+	notModified := false
 
 	for page := 0; ; page++ {
 		if page > 0 {
@@ -196,34 +204,50 @@ func (p *Poller) runQuery(ctx context.Context, repo string, since time.Time, tri
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"?"+params.Encode(), nil)
 		if err != nil {
-			return err
+			return false, err
 		}
 		req.Header.Set("Authorization", "Bearer "+p.gh.token)
 		req.Header.Set("Accept", "application/vnd.github+json")
+		if etag != "" {
+			req.Header.Set("If-None-Match", etag)
+		}
 
 		resp, err := p.client.Do(req)
 		if err != nil {
-			return err
+			return false, err
 		}
-		defer resp.Body.Close()
 
 		if resp.StatusCode == http.StatusNotModified {
-			// 304: no new data since watermark. Stop pagination.
+			// 304: no new data. Stop pagination and skip remaining queries.
+			resp.Body.Close()
+			notModified = true
 			break
 		}
+
 		if resp.StatusCode == http.StatusNotFound {
+			resp.Body.Close()
 			// Repo not found or no access.
-			return fmt.Errorf("repo %s not found: %w", repo, ErrNotAllowlisted)
+			return false, fmt.Errorf("repo %s not found: %w", repo, ErrNotAllowlisted)
 		}
 		if resp.StatusCode >= 400 {
 			body, _ := io.ReadAll(resp.Body)
-			return fmt.Errorf("GitHub API %d: %s", resp.StatusCode, string(body))
+			resp.Body.Close()
+			return false, fmt.Errorf("GitHub API %d: %s", resp.StatusCode, string(body))
+		}
+
+		// Save new ETag from response
+		if newETag := resp.Header.Get("ETag"); newETag != "" {
+			// Persist ETag with watermark for next tick
+			_ = p.wm.SaveETag(ctx, repo, trigger, newETag)
+			etag = newETag
 		}
 
 		var issues []githubIssue
 		if err := json.NewDecoder(resp.Body).Decode(&issues); err != nil {
-			return err
+			resp.Body.Close()
+			return false, err
 		}
+		resp.Body.Close()
 
 		if len(issues) == 0 {
 			break
@@ -240,11 +264,11 @@ func (p *Poller) runQuery(ctx context.Context, repo string, since time.Time, tri
 				if errors.Is(err, ErrNotCandidate) || errors.Is(err, ErrNotAllowlisted) {
 					continue
 				}
-				return err
+				return false, err
 			}
 			if err := p.q.Enqueue(ctx, task); err != nil {
 				if !errors.Is(err, queue.ErrDuplicate) {
-					return err
+					return false, err
 				}
 				// Duplicate: already enqueued, dedupe key handled it.
 			}
@@ -256,7 +280,7 @@ func (p *Poller) runQuery(ctx context.Context, repo string, since time.Time, tri
 			break
 		}
 	}
-	return nil
+	return notModified, nil
 }
 
 // splitRepo splits "owner/repo" into owner and repo.
