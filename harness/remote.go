@@ -46,13 +46,13 @@ func (h *RemoteHarness) withAuth(req *http.Request) {
 // the contract's field names, including timeout_seconds as whole seconds rather
 // than Go's nanosecond Duration encoding.
 type wireStartRequest struct {
-	AttemptID      string       `json:"attempt_id"`
-	Role           string       `json:"role"`
-	Prompt         string       `json:"prompt"`
-	Budget         int          `json:"budget"`
-	TimeoutSeconds int          `json:"timeout_seconds"`
-	Repository     wireRepo     `json:"repository"`
-	Ticket         *wireTicket  `json:"ticket"`
+	AttemptID      string      `json:"attempt_id"`
+	Role           string      `json:"role"`
+	Prompt         string      `json:"prompt"`
+	Budget         int         `json:"budget"`
+	TimeoutSeconds int         `json:"timeout_seconds"`
+	Repository     wireRepo    `json:"repository"`
+	Ticket         *wireTicket `json:"ticket"`
 }
 
 type wireRepo struct {
@@ -73,11 +73,11 @@ type wireTicket struct {
 // the server applies the tier default.
 func (req RunRequest) toWire() wireStartRequest {
 	w := wireStartRequest{
-		AttemptID:      req.AttemptID,
-		Role:           req.Role,
-		Prompt:         req.Prompt,
-		Budget:         req.Budget,
-		Repository:     wireRepo{ID: req.RepoRef.ID, Name: req.RepoRef.Name, URL: req.RepoRef.URL, Tracker: req.RepoRef.Tracker},
+		AttemptID:  req.AttemptID,
+		Role:       req.Role,
+		Prompt:     req.Prompt,
+		Budget:     req.Budget,
+		Repository: wireRepo{ID: req.RepoRef.ID, Name: req.RepoRef.Name, URL: req.RepoRef.URL, Tracker: req.RepoRef.Tracker},
 	}
 	if req.Timeout > 0 {
 		w.TimeoutSeconds = int(req.Timeout / time.Second)

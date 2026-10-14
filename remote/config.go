@@ -39,10 +39,10 @@ type Config struct {
 // wrong model.
 func DefaultConfig(bareDir, baseDir, gitHubToken string) *Config {
 	return &Config{
-		GitHubToken:    gitHubToken,
-		HTTPTimeout:    30 * time.Second,
-		WorktreeTTL:    24 * time.Hour,
-		GitHubAPIToken: "", // same as GitHubToken if empty
+		GitHubToken:      gitHubToken,
+		HTTPTimeout:      30 * time.Second,
+		WorktreeTTL:      24 * time.Hour,
+		GitHubAPIToken:   "", // same as GitHubToken if empty
 		WorkspaceManager: NewWorkspaceManager(bareDir, baseDir, gitHubToken),
 	}
 }
