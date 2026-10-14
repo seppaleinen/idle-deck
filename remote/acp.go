@@ -80,14 +80,14 @@ type acpSession struct {
 	processExited chan struct{}
 	id            SessionID // assigned by the server; kept for reaping
 
-	mu       sync.Mutex
-	acpSID   string
-	nextRPC  int
-	pending  map[int]chan rpcResult
-	result   RunResult
+	mu        sync.Mutex
+	acpSID    string
+	nextRPC   int
+	pending   map[int]chan rpcResult
+	result    RunResult
 	artifacts []Artifact
-	done     chan struct{}
-	doneOnce sync.Once
+	done      chan struct{}
+	doneOnce  sync.Once
 }
 
 // Start launches the ACP agent in the workspace, does the handshake, and
@@ -349,16 +349,63 @@ func (s *acpSession) observe(params json.RawMessage) {
 // recordToolCall extracts typed artifacts from completed tool activity.
 // The agent does git itself in the workspace (D27: the remote owns the
 // workspace); the wrapper observes commands to build the artifact list.
+//
+// Artifact inference is reference-based, not substring-based: a sweep that
+// prints "I would run `git push`" or "see PR #123" must not produce a
+// false-positive artifact (audit M10). We require an actual branch or PR
+// reference — a URL containing the pattern, or a command that creates one.
 func (s *acpSession) recordToolCall(text string) {
 	lower := strings.ToLower(text)
 	switch {
-	case containsAny(lower, "pr create", "pull_request", "/pull/"):
+	case hasPRReference(lower):
 		s.addArtifact(Artifact{Kind: "pull_request", URI: extractURL(text)})
-	case containsAny(lower, "issue comment", "gh api repos/"):
+	case hasCommentReference(lower):
 		s.addArtifact(Artifact{Kind: "comment", Body: extractURL(text)})
-	case containsAny(lower, "git push"):
+	case hasPushReference(lower):
 		s.addArtifact(Artifact{Kind: "branch", BranchPurpose: stringPtr("feature")})
 	}
+}
+
+// hasPRReference returns true when the tool output contains an actual PR
+// creation or reference — a URL containing "pull/new", "pull/create", or a
+// GitHub pull request URL pattern (e.g. "github.com/owner/repo/pull/123").
+// A bare mention of "pr create" in prose (e.g. "I would run pr create") is
+// NOT a reference and returns false.
+func hasPRReference(lower string) bool {
+	if strings.Contains(lower, "pull/new") || strings.Contains(lower, "pull/create") {
+		return true
+	}
+	// GitHub PR URL: github.com/<owner>/<repo>/pull/<number>
+	if strings.Contains(lower, "/pull/") && strings.Contains(lower, "github.com") {
+		return true
+	}
+	return false
+}
+
+// hasCommentReference returns true when the tool output contains an actual
+// issue comment creation — a URL containing "issues/<n>/comments" or the
+// "gh api repos" comment endpoint.
+func hasCommentReference(lower string) bool {
+	return strings.Contains(lower, "issues/") && strings.Contains(lower, "comments") ||
+		strings.Contains(lower, "gh api repos/") && strings.Contains(lower, "comments")
+}
+
+// hasPushReference returns true when the tool output contains an actual git
+// push command with a remote reference — "git push" followed by a remote
+// (origin, a hostname, or a URL). A bare "git push" in prose is not a push.
+func hasPushReference(lower string) bool {
+	if !strings.Contains(lower, "git push") {
+		return false
+	}
+	// Require a remote reference after "git push" to distinguish an actual
+	// push from a hypothetical mention.
+	rest := lower[strings.Index(lower, "git push")+len("git push"):]
+	rest = strings.TrimSpace(rest)
+	return strings.Contains(rest, "origin") ||
+		strings.Contains(rest, "github.com") ||
+		strings.Contains(rest, "git@") ||
+		strings.Contains(rest, "https://") ||
+		strings.Contains(rest, "http://")
 }
 
 func (s *acpSession) addArtifact(a Artifact) {
@@ -518,15 +565,6 @@ func outputText(rawOutput json.RawMessage) string {
 		return out.Output
 	}
 	return ""
-}
-
-func containsAny(s string, subs ...string) bool {
-	for _, sub := range subs {
-		if strings.Contains(s, sub) {
-			return true
-		}
-	}
-	return false
 }
 
 // extractURL pulls the first http(s) URL out of text.

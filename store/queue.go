@@ -402,6 +402,101 @@ func (q *SQLiteQueue) DB() *sql.DB {
 	return q.db
 }
 
+// CurrentAttempt returns the active attempt for a running task (the one
+// with outcome = ”). Returns queue.ErrNotFound if the task has no running
+// attempt. Used by dashboard cancel actions to route through the queue
+// seam rather than raw SQL (D24, I10).
+func (q *SQLiteQueue) CurrentAttempt(ctx context.Context, taskID string) (queue.AttemptRef, error) {
+	var ref queue.AttemptRef
+	var ordinal int
+	err := q.db.QueryRowContext(ctx, `
+		SELECT id, ordinal FROM attempts
+		WHERE task_id = ? AND outcome = ''
+		ORDER BY ordinal DESC LIMIT 1
+	`, taskID).Scan(&ref.AttemptID, &ordinal)
+	if err == sql.ErrNoRows {
+		return queue.AttemptRef{}, queue.ErrNotFound
+	}
+	if err != nil {
+		return queue.AttemptRef{}, fmt.Errorf("store: current attempt: %w", err)
+	}
+	ref.TaskID = taskID
+	ref.Ordinal = ordinal
+	return ref, nil
+}
+
+// CancelTask atomically records a user-initiated cancellation on a running
+// task's current attempt. It honours the lease (D24): the attempt is
+// recorded as preempted, consuming one retry (D17), and the task follows
+// normal retry/escalation (D14). Returns queue.ErrNotFound if the task is
+// not running. This is the seam method a dashboard cancel must use — never
+// a raw SQL write to tasks/attempts.
+func (q *SQLiteQueue) CancelTask(ctx context.Context, taskID string) error {
+	tx, err := q.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := q.now()
+	res, err := tx.ExecContext(ctx, `
+		UPDATE attempts
+		   SET outcome = 'preempted', finished_at = ?
+		WHERE task_id = ? AND outcome = ''
+	`, now.Format(time.RFC3339Nano), taskID)
+	if err != nil {
+		return fmt.Errorf("store: cancel attempt: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		tx.Rollback()
+		return queue.ErrNotFound
+	}
+	var count int
+	err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM attempts WHERE task_id = ?`, taskID).Scan(&count)
+	if err != nil {
+		tx.Rollback()
+		return fmt.Errorf("store: cancel count: %w", err)
+	}
+	// Preempted is retryable (D17): re-queue if under maxAttempts, escalate
+	// otherwise. This is the same path a P0 preemption uses (D16).
+	var state queue.TaskState
+	if count < q.maxA {
+		state = queue.StateQueued
+	} else {
+		state = queue.StateEscalated
+	}
+	res, err = tx.ExecContext(ctx, `UPDATE tasks SET state = ? WHERE id = ?`, state, taskID)
+	if err != nil {
+		tx.Rollback()
+		return fmt.Errorf("store: cancel task: %w", err)
+	}
+	n2, _ := res.RowsAffected()
+	if n2 == 0 {
+		tx.Rollback()
+		return fmt.Errorf("store: no task %q updated", taskID)
+	}
+	q.mu.Lock()
+	if q.active != nil && q.active.taskID == taskID {
+		q.active = nil
+	}
+	q.mu.Unlock()
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: cancel commit: %w", err)
+	}
+	q.notifyM.Lock()
+	notify := q.notify
+	q.notifyM.Unlock()
+	select {
+	case notify <- struct{}{}:
+	default:
+	}
+	select {
+	case <-q.events:
+	default:
+	}
+	return nil
+}
+
 // GetTask returns the full Task for the given id. The worker fetches task
 // details (prompt, budget, ticket, tier) after dequeuing, because Dequeue
 // returns only a Lease.
@@ -617,7 +712,7 @@ func (w *SQLiteWatermarks) SaveETag(ctx context.Context, repo string, queryID st
 	var etagJSON sql.NullString
 	err := w.db.QueryRowContext(ctx,
 		`SELECT etag FROM tracker_watermarks WHERE repo = ?`, repo).Scan(&etagJSON)
-	
+
 	etags := make(map[string]string)
 	if err == nil && etagJSON.Valid && etagJSON.String != "" {
 		if err := json.Unmarshal([]byte(etagJSON.String), &etags); err == nil {
@@ -626,13 +721,13 @@ func (w *SQLiteWatermarks) SaveETag(ctx context.Context, repo string, queryID st
 	} else if err != nil && err != sql.ErrNoRows {
 		return fmt.Errorf("watermark: load etag for save: %w", err)
 	}
-	
+
 	etags[queryID] = etag
 	updatedJSON, err := json.Marshal(etags)
 	if err != nil {
 		return fmt.Errorf("watermark: marshal etag json: %w", err)
 	}
-	
+
 	_, err = w.db.ExecContext(ctx, `
 UPDATE tracker_watermarks SET etag = ? WHERE repo = ?`,
 		string(updatedJSON), repo)

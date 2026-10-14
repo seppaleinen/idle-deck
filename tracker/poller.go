@@ -554,17 +554,24 @@ func (p *Poller) processActionCancel(ctx context.Context, payload string) error 
 	if pld.TaskID == "" {
 		return fmt.Errorf("cancel action: task_id required")
 	}
-	// The queue doesn't have a direct cancel; we can mark the task as escalated
-	// by updating its state, or we can rely on the worker's Abort.
-	// For simplicity, mark the task state as 'escalated' which will cause
-	// the worker to stop it on the next check.
-	_, err := p.q.DB().ExecContext(ctx, `
-		UPDATE tasks SET state = 'escalated' WHERE id = ? AND state = 'running'
-	`, pld.TaskID)
+	// Cancellation must go through the queue's lease mechanism (D24): the
+	// queue's CancelTask seam method records the running attempt as preempted,
+	// which consumes one retry (D17) and follows the normal retry/escalation
+	// path (D14). This honours the lease invariant rather than bypassing it
+	// with raw SQL writes to tasks/attempts.
+	// First, verify the task exists and is running via the seam.
+	task, err := p.q.GetTask(ctx, pld.TaskID)
 	if err != nil {
-		return err
+		return fmt.Errorf("cancel action: %w", err)
 	}
-	return nil
+	if task.State != queue.StateRunning {
+		// Not running — nothing to cancel; idempotent success.
+		return nil
+	}
+	// Cancel through the queue seam. The queue owns the lease; it atomically
+	// records the preempted outcome, updates the task state per retry policy,
+	// and releases the lease. This is the same path a P0 preemption uses (D16).
+	return p.q.CancelTask(ctx, pld.TaskID)
 }
 
 func (p *Poller) processActionRetry(ctx context.Context, payload string) error {
@@ -575,62 +582,36 @@ func (p *Poller) processActionRetry(ctx context.Context, payload string) error {
 	if pld.TaskID == "" {
 		return fmt.Errorf("retry action: task_id required")
 	}
-	// Re-enqueue the task by inserting a new attempt with incremented ordinal.
-	// First, get the task details and current attempt count.
-	var tier, prompt string
-	var timeoutSecs, budget int
-	var repoID, ticketTracker, ticketRepoID, ticketExternalID, ticketURL, eventType, dedupeKey string
-	var triggeredByEventType, triggeredByDedupeKey string
-	var triggeredByReceivedAt int64
-	err := p.q.DB().QueryRowContext(ctx, `
-		SELECT t.tier, t.prompt, t.timeout_seconds, t.budget, t.repository_id,
-		       t.ticket_tracker, t.ticket_repo_id, t.ticket_external_id, t.ticket_url,
-		       t.event_type, t.dedupe_key, t.triggered_by_event_type, t.triggered_by_dedupe_key, t.triggered_by_received_at
-		FROM tasks t WHERE t.id = ?
-	`, pld.TaskID).Scan(&tier, &prompt, &timeoutSecs, &budget, &repoID,
-		&ticketTracker, &ticketRepoID, &ticketExternalID, &ticketURL,
-		&eventType, &dedupeKey, &triggeredByEventType, &triggeredByDedupeKey, &triggeredByReceivedAt)
+	// Retry must go through the Queue seam (D24, I10): a fresh task via
+	// Enqueue, not raw SQL INSERT. Get the task details through the seam,
+	// then enqueue with a new dedupe key so the retry is not collapsed.
+	task, err := p.q.GetTask(ctx, pld.TaskID)
 	if err != nil {
-		return fmt.Errorf("retry action: task not found: %w", err)
+		return fmt.Errorf("retry action: %w", err)
 	}
-
-	// Get current attempt count
-	var attemptCount int
-	_ = p.q.DB().QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM attempts WHERE task_id = ?
-	`, pld.TaskID).Scan(&attemptCount)
-
-	// Create new task with new ID but same properties, increment ordinal in attempt
-	newTaskID := pld.TaskID + "-retry-" + fmt.Sprintf("%d", attemptCount+1)
+	// Generate a fresh dedupe key for the retry (I10: "never revive in place").
+	// The new task carries a distinct identity; it follows normal retry/escalation
+	// per D14 (two retries then escalate).
+	newTaskID := pld.TaskID + "-retry"
 	now := p.now().UnixNano()
-	_, err = p.q.DB().ExecContext(ctx, `
-		INSERT INTO tasks (id, repository_id, ticket_tracker, ticket_repo_id, ticket_external_id, ticket_url,
-			tier, prompt, timeout_seconds, budget, state, event_type, dedupe_key, received_at, created_at,
-			triggered_by_event_type, triggered_by_dedupe_key, triggered_by_received_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?)
-	`, newTaskID, repoID, ticketTracker, ticketRepoID, ticketExternalID, ticketURL,
-		tier, prompt, timeoutSecs, budget, eventType, dedupeKey, now, now,
-		triggeredByEventType, triggeredByDedupeKey, triggeredByReceivedAt)
-	if err != nil {
-		return fmt.Errorf("retry action: insert task: %w", err)
-	}
+	dedupeKey := fmt.Sprintf("retry-%s-%d", pld.TaskID, now)
 
-	// Enqueue the new task
-	task := queue.Task{
+	retryTask := queue.Task{
 		ID:             newTaskID,
-		RepositoryID:   repoID,
-		Ticket:         queue.TrackerRef{Tracker: ticketTracker, RepositoryID: ticketRepoID, ExternalID: ticketExternalID, URL: ticketURL},
-		Tier:           queue.TaskTier(tier),
-		Prompt:         prompt,
+		RepositoryID:   task.RepositoryID,
+		Ticket:         task.Ticket,
+		Tier:           task.Tier,
+		Prompt:         task.Prompt,
+		TimeoutSeconds: task.TimeoutSeconds,
+		Budget:         task.Budget,
 		State:          queue.StateQueued,
-		TimeoutSeconds: timeoutSecs,
-		Budget:         budget,
 		TriggeredBy: queue.TriggeredBy{
-			EventType:  eventType,
+			EventType:  task.TriggeredBy.EventType,
 			DedupeKey:  dedupeKey,
 			ReceivedAt: now,
 		},
-		CreatedAt: now,
+		DerivedFrom: pld.TaskID,
+		CreatedAt:   now,
 	}
-	return p.q.Enqueue(ctx, task)
+	return p.q.Enqueue(ctx, retryTask)
 }

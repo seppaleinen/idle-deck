@@ -191,8 +191,27 @@ type Queue interface {
 	// details (prompt, budget, ticket, tier) after dequeuing, because Dequeue
 	// returns only a Lease.
 	GetTask(ctx context.Context, taskID string) (Task, error)
+	// CurrentAttempt returns the active attempt for a running task (the one
+	// with outcome = ''). Returns ErrNotFound if the task has no running
+	// attempt. Used by dashboard cancel actions to route through the queue
+	// seam rather than raw SQL (D24, I10).
+	CurrentAttempt(ctx context.Context, taskID string) (AttemptRef, error)
+	// CancelTask atomically records a user-initiated cancellation on a running
+	// task's current attempt. It honours the lease (D24): the attempt is
+	// recorded as preempted, consuming one retry (D17), and the task follows
+	// normal retry/escalation (D14). Returns ErrNotFound if the task is not
+	// running. This is the seam method a dashboard cancel must use — never
+	// a raw SQL write to tasks/attempts.
+	CancelTask(ctx context.Context, taskID string) error
 	// SaveArtifacts persists harness-returned artifacts for an attempt.
 	SaveArtifacts(ctx context.Context, attemptID string, artifacts []Artifact) error
 	// DB returns the underlying database connection for raw queries (e.g., dashboard actions).
 	DB() *sql.DB
+}
+
+// AttemptRef identifies an attempt by its task and attempt ids.
+type AttemptRef struct {
+	TaskID    string
+	AttemptID string
+	Ordinal   int
 }

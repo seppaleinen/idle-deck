@@ -35,8 +35,8 @@ func newStubQueue(t *testing.T) *stubQueue {
 		t:           t,
 		tasks:       make(map[string]queue.Task),
 		attempts:    make(map[string][]queueAttempt),
-		leases:     make(map[string]queue.Lease),
-		events:     make(chan queue.QueueEvent, 10),
+		leases:      make(map[string]queue.Lease),
+		events:      make(chan queue.QueueEvent, 10),
 		maxAttempts: 3, // mirrors store.NewSQLiteQueue(dbPath, store.WithMaxAttempts(3))
 	}
 }
@@ -243,6 +243,57 @@ func (q *stubQueue) AttemptCount(ctx context.Context, taskID string) (int, error
 	return count, nil
 }
 
+func (q *stubQueue) CurrentAttempt(ctx context.Context, taskID string) (queue.AttemptRef, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	attempts := q.attempts[taskID]
+	for i := len(attempts) - 1; i >= 0; i-- {
+		if attempts[i].Outcome == "" {
+			return queue.AttemptRef{
+				TaskID:    taskID,
+				AttemptID: attempts[i].ID,
+				Ordinal:   i + 1,
+			}, nil
+		}
+	}
+	return queue.AttemptRef{}, queue.ErrNotFound
+}
+
+func (q *stubQueue) CancelTask(ctx context.Context, taskID string) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	task, ok := q.tasks[taskID]
+	if !ok {
+		return queue.ErrNotFound
+	}
+	if task.State != queue.StateRunning {
+		return queue.ErrNotFound
+	}
+	// Record the running attempt as preempted (D17: consumes one retry).
+	attempts := q.attempts[taskID]
+	for i := len(attempts) - 1; i >= 0; i-- {
+		if attempts[i].Outcome == "" {
+			q.attempts[taskID][i].Outcome = queue.OutcomePreempted
+			break
+		}
+	}
+	// Re-queue if under maxAttempts, escalate otherwise (mirrors SQLiteQueue).
+	count := 0
+	for _, a := range attempts {
+		if a.Outcome != "" {
+			count++
+		}
+	}
+	if count < q.maxAttempts {
+		task.State = queue.StateQueued
+	} else {
+		task.State = queue.StateEscalated
+	}
+	q.tasks[taskID] = task
+	delete(q.leases, taskID)
+	return nil
+}
+
 type stubHarness struct {
 	t              *testing.T
 	mu             sync.Mutex
@@ -381,13 +432,13 @@ func (h *stubHarness) Result(ctx context.Context, id harness.RunID) (harness.Run
 }
 
 type stubSink struct {
-	t         *testing.T
-	mu        sync.Mutex
-	comments  []struct {
+	t        *testing.T
+	mu       sync.Mutex
+	comments []struct {
 		ref  queue.TrackerRef
 		body string
 	}
-	labels     []struct {
+	labels []struct {
 		ref         queue.TrackerRef
 		add, remove []string
 	}
@@ -1072,13 +1123,13 @@ func TestBackoffApplied(t *testing.T) {
 // makeSweepTask creates a P3 sweep task (D44 — ticket is zero-value for P3).
 func makeSweepTask(id string) queue.Task {
 	return queue.Task{
-		ID:           id,
-		RepositoryID: "repo",
-		Ticket:       queue.TrackerRef{}, // zero value for P3 (D44)
-		Tier:         queue.TierP3,
-		Prompt:       "sweep prompt",
-		State:        queue.StateQueued,
-		Budget:       20000,
+		ID:             id,
+		RepositoryID:   "repo",
+		Ticket:         queue.TrackerRef{}, // zero value for P3 (D44)
+		Tier:           queue.TierP3,
+		Prompt:         "sweep prompt",
+		State:          queue.StateQueued,
+		Budget:         20000,
 		TimeoutSeconds: 3600,
 		TriggeredBy: queue.TriggeredBy{
 			EventType:  "schedule.sweep",
@@ -1365,6 +1416,7 @@ func TestSweepNeverEscalates(t *testing.T) {
 	case <-time.After(1 * time.Second):
 	}
 }
+
 // Helper for tests
 func (q *stubQueue) GetLeaseForTask(taskID string) (queue.Lease, bool) {
 	q.mu.Lock()

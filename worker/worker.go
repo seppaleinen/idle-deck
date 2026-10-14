@@ -77,6 +77,8 @@ type Queue interface {
 	Events(ctx context.Context) (<-chan queue.QueueEvent, error)
 	Release(ctx context.Context, lease queue.Lease) error
 	GetTask(ctx context.Context, taskID string) (queue.Task, error)
+	CurrentAttempt(ctx context.Context, taskID string) (queue.AttemptRef, error)
+	CancelTask(ctx context.Context, taskID string) error
 	SaveArtifacts(ctx context.Context, attemptID string, artifacts []queue.Artifact) error
 	AttemptCount(ctx context.Context, taskID string) (int, error)
 }
@@ -565,24 +567,14 @@ func (w *Worker) handleSweepResult(ctx context.Context, lease queue.Lease, task 
 
 	// D43: a sweep may not produce a pull_request artifact, and may not
 	// produce a feature branch. Either is a non-retryable protocol violation.
-	for _, a := range result.Artifacts {
-		if a.Kind == string(queue.ArtifactPullRequest) {
-			w.log.Error("worker: sweep produced pull_request artifact (non-retryable protocol violation)",
-				"task_id", task.ID)
-			return w.nackSweepNonRetryable(ctx, lease, task)
-		}
-		if a.Kind == string(queue.ArtifactBranch) && a.BranchPurpose != nil && *a.BranchPurpose == string(queue.BranchFeature) {
-			w.log.Error("worker: sweep produced feature branch (non-retryable protocol violation)",
-				"task_id", task.ID)
-			return w.nackSweepNonRetryable(ctx, lease, task)
-		}
-	}
-
-	// D43/ADR 0020: file one issue per finding from the report artifact.
-	for _, a := range result.Artifacts {
-		if a.Kind == string(queue.ArtifactReport) {
-			w.fileSweepFindings(ctx, task, a)
-		}
+	// This check runs on ALL outcomes — a sweep carrying a pull_request artifact
+	// or a feature branch is a violation regardless of whether the run succeeded
+	// (D43). The check is after artifact save so the violation is recorded
+	// diagnostically before the task is dropped.
+	if w.sweepProtocolViolation(result) {
+		w.log.Error("worker: sweep protocol violation (non-retryable)",
+			"task_id", task.ID)
+		return w.nackSweepNonRetryable(ctx, lease, task)
 	}
 
 	// Map harness outcome to queue outcome.
@@ -608,6 +600,15 @@ func (w *Worker) handleSweepResult(ctx context.Context, lease queue.Lease, task 
 		"tier", task.Tier,
 		"outcome", outcome,
 	)
+
+	// D43/ADR 0020: file one issue per finding from the report artifact.
+	// Only file findings if the sweep did not violate the protocol — a sweep
+	// that produced a PR or feature branch is dropped without filing.
+	for _, a := range result.Artifacts {
+		if a.Kind == string(queue.ArtifactReport) {
+			w.fileSweepFindings(ctx, task, a)
+		}
+	}
 
 	if outcome == queue.OutcomeSucceeded {
 		if err := w.queue.Ack(ctx, lease, lease.AttemptID); err != nil {
@@ -636,6 +637,21 @@ func (w *Worker) handleSweepResult(ctx context.Context, lease queue.Lease, task 
 	}
 	// D45: intentionally skip escalation check for sweep tier.
 	return nil, false
+}
+
+// sweepProtocolViolation checks whether a sweep run's artifacts violate D43:
+// a sweep may never produce a pull_request artifact or a feature branch.
+// Runs on ALL outcomes — a violation is a violation regardless of success.
+func (w *Worker) sweepProtocolViolation(result harness.RunResult) bool {
+	for _, a := range result.Artifacts {
+		if a.Kind == string(queue.ArtifactPullRequest) {
+			return true
+		}
+		if a.Kind == string(queue.ArtifactBranch) && a.BranchPurpose != nil && *a.BranchPurpose == string(queue.BranchFeature) {
+			return true
+		}
+	}
+	return false
 }
 
 // nackSweepNonRetryable records a non-retryable protocol violation for a
