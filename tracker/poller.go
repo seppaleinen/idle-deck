@@ -19,23 +19,30 @@ import (
 
 // Poller runs the polling loop for a set of repositories (event-contract §2, §8).
 type Poller struct {
-	gh         *GitHub
-	q          queue.Queue
-	wm         store.WatermarkStore
-	repos      []string
-	interval   time.Duration
-	now        func() time.Time
-	client     *http.Client
-	sweepPeriod time.Duration
-	sweepRepos  []string
-	sweepPrompt string
+	gh           *GitHub
+	q            queue.Queue
+	wm           store.WatermarkStore
+	repos        []string
+	interval     time.Duration
+	now          func() time.Time
+	client       *http.Client
+	sweepPeriod  time.Duration
+	sweepRepos   []string
+	sweepPrompt  string
+	sweepTimeout int
+	sweepBudget  int
 }
 
 // SweepConfig holds optional sweep configuration for the poller.
+// TimeoutSeconds and Budget come from the operator's D37 overrides
+// (IDLE_DECK_TIER_TIMEOUT_SWEEP, IDLE_DECK_BUDGET_SWEEP); zero means
+// "use the D37 default" so the poller never hardcodes a tier value.
 type SweepConfig struct {
-	Period  time.Duration
-	Repos   []string
-	Prompt  string
+	Period         time.Duration
+	Repos          []string
+	Prompt         string
+	TimeoutSeconds int
+	Budget         int
 }
 
 // WithSweep returns a PollerOption that configures P3 sweep scheduling.
@@ -44,6 +51,8 @@ func WithSweep(cfg SweepConfig) func(*Poller) {
 		p.sweepPeriod = cfg.Period
 		p.sweepRepos = cfg.Repos
 		p.sweepPrompt = cfg.Prompt
+		p.sweepTimeout = cfg.TimeoutSeconds
+		p.sweepBudget = cfg.Budget
 	}
 }
 
@@ -110,6 +119,19 @@ func (p *Poller) Sweep(ctx context.Context) error {
 		// into one task per bucket (D28).
 		hash := sha256.Sum256([]byte(dedupeKey))
 		taskID := "sweep-" + hex.EncodeToString(hash[:])
+		// D37: the sweep tier's timeout and budget are operator-configurable
+		// via IDLE_DECK_TIER_TIMEOUT_SWEEP / IDLE_DECK_BUDGET_SWEEP. The poller
+		// is configured with the resolved values at construction time; a zero
+		// value here means the operator did not override and the D37 default
+		// (3600s / 20000) applies — the poller never hardcodes a tier value.
+		timeoutSecs := p.sweepTimeout
+		if timeoutSecs <= 0 {
+			timeoutSecs = 3600
+		}
+		budget := p.sweepBudget
+		if budget <= 0 {
+			budget = 20000
+		}
 		task := queue.Task{
 			ID:             taskID,
 			RepositoryID:   repo,
@@ -117,8 +139,8 @@ func (p *Poller) Sweep(ctx context.Context) error {
 			Tier:           queue.TierP3,
 			Prompt:         p.sweepPrompt,
 			State:          queue.StateQueued,
-			TimeoutSeconds: 3600,
-			Budget:         20000,
+			TimeoutSeconds: timeoutSecs,
+			Budget:         budget,
 			TriggeredBy: queue.TriggeredBy{
 				EventType:  "schedule.sweep",
 				DedupeKey:  dedupeKey,
@@ -316,15 +338,33 @@ func (g *GitHub) postComment(ctx context.Context, ref queue.TrackerRef, body str
 	return nil
 }
 
-// patchLabels adds/removes labels on an issue (TrackerSink.SetLabels).
+// patchLabels applies add/remove to an issue's labels (TrackerSink.SetLabels).
+// GitHub's PATCH /issues/{number} replaces the entire label set, so we read
+// the current labels first and compute the new set as (current ∪ add) − remove.
+// This is what makes event-contract §6 real: the trigger label is removed
+// on any terminal state (D29), not silently dropped.
 func (g *GitHub) patchLabels(ctx context.Context, ref queue.TrackerRef, add, remove []string) error {
-	// Get current labels first, then compute new set.
-	// For simplicity, we just PATCH the issue with the new label list.
-	// In practice, we'd read current labels and apply add/remove.
-	endpoint := fmt.Sprintf("%s/repos/%s/issues/%s", g.apiURL, ref.RepositoryID, ref.ExternalID)
-	payload := map[string]any{
-		"labels": add, // For now, just set to 'add'; remove is a no-op in this stub impl.
+	current, err := g.getLabels(ctx, ref)
+	if err != nil {
+		return err
 	}
+	set := make(map[string]bool, len(current)+len(add))
+	for _, l := range current {
+		set[l] = true
+	}
+	for _, l := range add {
+		set[l] = true
+	}
+	for _, l := range remove {
+		delete(set, l)
+	}
+	newLabels := make([]string, 0, len(set))
+	for l := range set {
+		newLabels = append(newLabels, l)
+	}
+
+	endpoint := fmt.Sprintf("%s/repos/%s/issues/%s", g.apiURL, ref.RepositoryID, ref.ExternalID)
+	payload := map[string]any{"labels": newLabels}
 	b, _ := json.Marshal(payload)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, endpoint, strings.NewReader(string(b)))
 	if err != nil {
@@ -343,6 +383,46 @@ func (g *GitHub) patchLabels(ctx context.Context, ref queue.TrackerRef, add, rem
 		return fmt.Errorf("patch labels: %d: %s", resp.StatusCode, string(b))
 	}
 	return nil
+}
+
+// getLabels reads the current labels on an issue via GET /issues/{number}.
+// Needed because GitHub's PATCH replaces the whole label set — we must
+// know what is already there before computing the new set.
+func (g *GitHub) getLabels(ctx context.Context, ref queue.TrackerRef) ([]string, error) {
+	endpoint := fmt.Sprintf("%s/repos/%s/issues/%s", g.apiURL, ref.RepositoryID, ref.ExternalID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+g.token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	resp, err := g.httpClient().Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("get labels: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("get labels: %d: %s", resp.StatusCode, string(b))
+	}
+	// The issues endpoint returns a JSON array; pick the one whose number
+	// matches the ref's external id.
+	var issues []githubIssue
+	if err := json.NewDecoder(resp.Body).Decode(&issues); err != nil {
+		return nil, fmt.Errorf("get labels: decode: %w", err)
+	}
+	for _, issue := range issues {
+		if fmt.Sprintf("%d", issue.Number) == ref.ExternalID {
+			labels := make([]string, 0, len(issue.Labels))
+			for _, l := range issue.Labels {
+				labels = append(labels, l.Name)
+			}
+			return labels, nil
+		}
+	}
+	// Issue not found — nothing to remove; return an empty set rather than
+	// an error so a remove on a missing issue is a no-op (idempotent).
+	return nil, nil
 }
 
 // postIssue creates a new issue (TrackerSink.OpenIssue for P3 sweep findings).

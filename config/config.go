@@ -251,10 +251,11 @@ func fromEnvNoValidate() (Config, error) {
 // Load builds a Config with precedence: defaults → env → flags (via flag.Visit).
 // Missing required variables or validation failures are returned as errors.
 func Load(fo *FlagOverrides) (Config, error) {
-	// Relaxed load without full validation. Used by read-only tools like status/serve.
-	// It builds config from defaults then env then flags, but does not enforce required variables.
-	// The LoadRelaxed helper is exported for use by tools that only need a subset of config.
-	//t// See config/LoadRelaxed for implementation.n
+	// Load resolves config from defaults → env → flags and then validates.
+	// It is the strict entry point for the daemon (run), which refuses to start
+	// on missing required variables or malformed values. The relaxed entry point
+	// (LoadRelaxed) is the same pipeline plus validation, and is used by the
+	// read-only commands (check, status, serve).
 	c, err := fromEnvNoValidate()
 	if err != nil {
 		return Config{}, err

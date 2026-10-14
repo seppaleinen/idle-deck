@@ -259,6 +259,52 @@ func TestPollIntervalBad(t *testing.T) {
 	}
 }
 
+// TestLoadRelaxedValidates verifies H4: LoadRelaxed calls Validate, so `check`
+// rejects malformed config rather than printing it and failing later.
+// operator-surface §5 step 6 requires `check` to print resolved config, which
+// is only meaningful if that config is known to be well-formed.
+func TestLoadRelaxedValidates(t *testing.T) {
+	clearEnv(t)
+	os.Setenv(EnvGitHubToken, "ghp_test")
+	os.Setenv(EnvRepos, "acme/widgets")
+	os.Setenv(EnvHarnessURL, "https://h.example.com")
+	os.Setenv(EnvHarnessToken, "htok")
+
+	// Malformed repos string must fail LoadRelaxed, not pass through.
+	os.Setenv(EnvRepos, "acme widgets") // space — invalid per validateRepos
+	_, err := LoadRelaxed(nil)
+	if err == nil {
+		t.Fatal("expected LoadRelaxed to reject malformed repos")
+	}
+	// The repos error names the offending repo string, not the env var
+	// (validateRepos reports the value); what matters is that validation
+	// ran at all rather than being skipped.
+	if !strings.Contains(err.Error(), "must not contain spaces") {
+		t.Errorf("unexpected repos error: %s", err)
+	}
+
+	// Malformed harness URL must also fail.
+	os.Setenv(EnvRepos, "acme/widgets")
+	os.Setenv(EnvHarnessURL, "not a url")
+	_, err = LoadRelaxed(nil)
+	if err == nil {
+		t.Fatal("expected LoadRelaxed to reject malformed harness URL")
+	}
+	if !strings.Contains(err.Error(), "IDLE_DECK_HARNESS_URL") {
+		t.Errorf("error does not name the offending variable: %s", err)
+	}
+
+	// A fully valid config must succeed through LoadRelaxed.
+	os.Setenv(EnvHarnessURL, "https://h.example.com")
+	cfg, err := LoadRelaxed(nil)
+	if err != nil {
+		t.Fatalf("LoadRelaxed on valid config: %v", err)
+	}
+	if cfg.Repos != "acme/widgets" {
+		t.Errorf("Repos = %q, want acme/widgets", cfg.Repos)
+	}
+}
+
 func TestFlagOverridesEnv(t *testing.T) {
 	clearEnv(t)
 	os.Setenv(EnvGitHubToken, "ghp_test")

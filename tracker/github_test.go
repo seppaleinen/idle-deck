@@ -172,6 +172,74 @@ We need Redis.`
 	}
 }
 
+// TestSetLabelsRemove verifies event-contract §6: SetLabels honours the
+// remove parameter. The real adapter PATCHes the issue with the computed
+// label set (current ∪ add) − remove, so a removed label must actually be
+// gone from the stub's state afterwards (D29).
+func TestSetLabelsRemove(t *testing.T) {
+	repo := "acme/widgets"
+	tState := stubs.NewTrackerState(repo)
+	tState.AddRepoLabel("idle-ready")
+	tServer := stubs.NewTrackerServer(tState)
+	defer tServer.Close()
+
+	issue := &stubs.GitHubIssue{
+		Number: 412,
+		Title:  "Add caching",
+		Body:   "Need Redis.",
+		User:   stubs.GitHubUser{Type: "User"},
+	}
+	issue.Labels = []stubs.GitHubLabel{stubs.LabelIdleReady}
+	tState.UpsertIssue(issue)
+
+	gh := NewGitHub(tServer.URL(), "stub-token", []string{repo}, store.NewSQLiteWatermarks(nil))
+
+	if err := gh.SetLabels(context.Background(),
+		queue.TrackerRef{Tracker: "github", RepositoryID: repo, ExternalID: "412"},
+		nil, []string{"idle-ready"}); err != nil {
+		t.Fatalf("SetLabels: %v", err)
+	}
+
+	if tState.HasLabel(412, "idle-ready") {
+		t.Error("idle-ready should have been removed (event-contract §6)")
+	}
+}
+
+// TestSetLabelsAdd verifies SetLabels adds labels that were absent, without
+// dropping labels that were already present (GitHub PATCH replaces the whole
+// set, so the adapter must read-then-merge, not blindly overwrite).
+func TestSetLabelsAdd(t *testing.T) {
+	repo := "acme/widgets"
+	tState := stubs.NewTrackerState(repo)
+	tServer := stubs.NewTrackerServer(tState)
+	defer tServer.Close()
+
+	issue := &stubs.GitHubIssue{
+		Number: 412,
+		Title:  "Add caching",
+		Body:   "Need Redis.",
+		User:   stubs.GitHubUser{Type: "User"},
+	}
+	issue.Labels = []stubs.GitHubLabel{stubs.LabelIdleReady}
+	tState.UpsertIssue(issue)
+
+	gh := NewGitHub(tServer.URL(), "stub-token", []string{repo}, store.NewSQLiteWatermarks(nil))
+
+	if err := gh.SetLabels(context.Background(),
+		queue.TrackerRef{Tracker: "github", RepositoryID: repo, ExternalID: "412"},
+		[]string{"idle-hotfix"}, nil); err != nil {
+		t.Fatalf("SetLabels: %v", err)
+	}
+
+	if !tState.HasLabel(412, "idle-ready") {
+		t.Error("idle-ready should have been preserved (adapter merges, does not replace)")
+	}
+	if !tState.HasLabel(412, "idle-hotfix") {
+		t.Error("idle-hotfix should have been added")
+	}
+}
+
+// TestParse_P0Prompt verifies the P0 prompt carries the correct role mapping.
 func TestParse_P0Prompt(t *testing.T) {
 	gh := NewGitHub("http://localhost", "token", []string{"acme/widgets"}, store.NewSQLiteWatermarks(nil))
 	raw := makeIssueJSON(412, "Hotfix", "Urgent.", []stubs.GitHubLabel{{Name: "idle-hotfix"}}, time.Now(), time.Now(), "User", false)
@@ -399,6 +467,48 @@ func TestPollerSweepEnqueuesP3(t *testing.T) {
 // TestPollerSweepDedupeCollapse verifies that repeated Sweep calls within the
 // same bucket collapse to a single task (ErrDuplicate is a no-op). A new bucket
 // produces a new task.
+// TestPollerSweepHonoursConfiguredTimeoutBudget verifies D37: the sweep
+// tier's timeout and budget are operator-configurable via env overrides,
+// and the poller honours them instead of hardcoding 3600s / 20000.
+func TestPollerSweepHonoursConfiguredTimeoutBudget(t *testing.T) {
+	repo := "acme/widgets"
+	dbPath := t.TempDir() + "/sweep-cfg.db"
+	db, err := store.Open(context.Background(), dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	wm := store.NewSQLiteWatermarks(db)
+	queue := store.NewSQLiteQueue(dbPath, store.WithLeaseDuration(5*time.Minute), store.WithMaxAttempts(3))
+	gh := NewGitHub("http://localhost", "token", []string{repo}, wm)
+	p := NewPoller(gh, queue, wm, []string{repo}, 60*time.Second,
+		WithSweep(SweepConfig{
+			Period:         24 * time.Hour,
+			Repos:          []string{repo},
+			Prompt:         "sweep prompt",
+			TimeoutSeconds: 7200,
+			Budget:         45000,
+		}))
+	p.now = func() time.Time { return time.Date(2026, 9, 29, 9, 0, 0, 0, time.UTC) }
+	ctx := context.Background()
+	if err := p.Sweep(ctx); err != nil {
+		t.Fatalf("Sweep failed: %v", err)
+	}
+	var budget, timeoutSec int
+	err = db.QueryRowContext(context.Background(), `
+		SELECT budget, timeout_seconds FROM tasks WHERE tier = 'P3'`).
+		Scan(&budget, &timeoutSec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if budget != 45000 {
+		t.Errorf("budget: got %d, want 45000 (D37 override)", budget)
+	}
+	if timeoutSec != 7200 {
+		t.Errorf("timeout_seconds: got %d, want 7200 (D37 override)", timeoutSec)
+	}
+}
+
 func TestPollerSweepDedupeCollapse(t *testing.T) {
 	repo := "acme/widgets"
 	dbPath := t.TempDir() + "/sweep.db"

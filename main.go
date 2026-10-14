@@ -236,9 +236,11 @@ func runRun(args []string) int {
 
 	poller := tracker.NewPoller(trk, q, wm, repos, cfg.PollInterval,
 		tracker.WithSweep(tracker.SweepConfig{
-			Period: cfg.SweepPeriod,
-			Repos:  sweepRepos,
-			Prompt: cfg.SweepPrompt,
+			Period:         cfg.SweepPeriod,
+			Repos:          sweepRepos,
+			Prompt:         cfg.SweepPrompt,
+			TimeoutSeconds: int(cfg.TierTimeoutSweep / time.Second),
+			Budget:         cfg.BudgetSweep,
 		}))
 	go func() {
 		ticker := time.NewTicker(cfg.PollInterval)

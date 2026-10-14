@@ -46,6 +46,15 @@ type GitHubUser struct {
 	Type string `json:"type"` // "User" or "Bot"
 }
 
+// toLabels converts a bare label-name list into GitHubLabel values.
+func toLabels(names []string) []GitHubLabel {
+	out := make([]GitHubLabel, 0, len(names))
+	for _, n := range names {
+		out = append(out, GitHubLabel{Name: n})
+	}
+	return out
+}
+
 // TrackerState holds the mutable state for the tracker stub server.
 type TrackerState struct {
 	mu           sync.Mutex
@@ -225,7 +234,7 @@ func (s *TrackerServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *TrackerServer) handleRepos(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+	if r.Method != http.MethodGet && r.Method != http.MethodPatch {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -257,6 +266,39 @@ func (s *TrackerServer) handleRepos(w http.ResponseWriter, r *http.Request) {
 	}
 	if parts[2] != "issues" {
 		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+
+	// PATCH /repos/{owner}/{repo}/issues/{number} — replace the issue's label set.
+	// This is what TrackerSink.SetLabels exercises: the adapter computes the new
+	// set as (current ∪ add) − remove and PATCHes the whole list (GitHub's
+	// semantics), so the stub must accept a full replacement too.
+	if r.Method == http.MethodPatch {
+		if len(parts) < 4 {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		num, err := strconv.Atoi(parts[3])
+		if err != nil {
+			http.Error(w, "invalid issue number", http.StatusBadRequest)
+			return
+		}
+		repo := parts[0] + "/" + parts[1]
+		if repo != s.State.Repo {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		defer r.Body.Close()
+		var body struct {
+			Labels []string `json:"labels"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid body", http.StatusBadRequest)
+			return
+		}
+		s.State.SetLabels(num, toLabels(body.Labels))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
 		return
 	}
 
