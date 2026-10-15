@@ -556,3 +556,34 @@ func TestPollerSweepDedupeCollapse(t *testing.T) {
 		t.Errorf("expected 2 P3 tasks (one per bucket), got %d", count)
 	}
 }
+
+// TestExtractRepo pins the host-agnostic extraction (M1 fix).
+// github.com, GHE, http, https, with/without port, with/without scheme —
+// all return the same owner/repo because the host carries no trust decision
+// (I1 allowlist authorizes the repo, not the hostname).
+func TestExtractRepo(t *testing.T) {
+	cases := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{"github.com HTTPS", "https://github.com/acme/widgets/issues/412", "acme/widgets"},
+		{"github.com HTTP", "http://github.com/acme/widgets/issues/412", "acme/widgets"},
+		{"GHE HTTPS", "https://git.acme.com/acme/widgets/issues/412", "acme/widgets"},
+		{"GHE HTTP", "http://git.acme.com/acme/widgets/issues/412", "acme/widgets"},
+		{"GHE with port", "https://git.acme.com:8443/acme/widgets/issues/412", "acme/widgets"},
+		{"no scheme", "github.com/acme/widgets/issues/412", "acme/widgets"},
+		{"GHE no scheme", "git.acme.com/acme/widgets/issues/412", "acme/widgets"},
+		{"no /issues suffix", "https://github.com/acme/widgets", "acme/widgets"},
+		{"malformed empty", "", ""},
+		{"malformed no slash", "https://github.com", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := extractRepo(tc.url)
+			if got != tc.want {
+				t.Errorf("extractRepo(%q) = %q, want %q", tc.url, got, tc.want)
+			}
+		})
+	}
+}

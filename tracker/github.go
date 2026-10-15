@@ -175,9 +175,20 @@ func triggerLabel(trigger string) string {
 
 // extractRepo pulls "owner/repo" from a GitHub issue HTML URL.
 // e.g. https://github.com/acme/widgets/issues/412 → acme/widgets
+//
+// The host is stripped generically, not matched against github.com: a
+// GitHub Enterprise instance serves the same URL shape on its own host, and
+// the host carries no trust decision — the allowlist gate at I1 authorizes
+// the repo, not the hostname. Matching github.com here would silently
+// corrupt the repo ref for any non-github.com deployment.
 func extractRepo(htmlURL string) string {
-	s := strings.TrimPrefix(htmlURL, "https://github.com/")
-	s = strings.TrimPrefix(s, "http://github.com/")
+	s := htmlURL
+	if idx := strings.Index(s, "://"); idx >= 0 {
+		s = s[idx+3:]
+	}
+	if idx := strings.Index(s, "/"); idx >= 0 {
+		s = s[idx+1:]
+	}
 	parts := strings.SplitN(s, "/", 3)
 	if len(parts) < 2 {
 		return ""

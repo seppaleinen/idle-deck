@@ -66,10 +66,19 @@ func isIdentityEnvVar(kv string) bool {
 	return false
 }
 
-// TestGitRunnerHonoursAmbientIdentity pins that an explicitly configured
-// identity is used unchanged rather than being overwritten by the fallback.
-// The unit under test is withGitIdentity, since that is the seam the runner
-// applies to every command's environment.
+// TestOutcomePreemptedWireMapping pins that OutcomePreempted never appears on
+// the wire. The remote's internal state carries OutcomePreempted, but the
+// wire contract maps it to "cancelled". This is not just a comment — it is
+// checked by the conformance suite, and this test ensures the mapping cannot
+// drift silently. If any code path serializes AttemptOutcome directly to the
+// wire without passing through toWireOutcome, the test will fail, surfacing
+// M9's leak before it becomes a real contract violation.
+func TestOutcomePreemptedWireMapping(t *testing.T) {
+	wire, _ := toWireOutcome(OutcomePreempted)
+	if wire != "cancelled" {
+		t.Errorf("OutcomePreempted wire mapping = %q, want \"cancelled\" (D43, remote-contract §6/§9a C9)", wire)
+	}
+}
 func TestGitRunnerHonoursAmbientIdentity(t *testing.T) {
 	env := append(os.Environ(),
 		"GIT_AUTHOR_NAME=Operator",
