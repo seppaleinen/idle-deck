@@ -125,8 +125,6 @@ Close the seven high-severity findings from the architecture audit (docs/plans/a
 **Still open:**
 - M4 (Result backoff) — document the behavior instead of changing it.
 - M5–M8 — clean up after high-severity fixes land (M4–M8 already fixed in PR #35).
-- M7 (contract gap) — `remote-contract §5` specifies progress fields the MVP adapter ignores.
-  Needs a design decision: implement progress streaming, or document it as a known MVP gap.
 
 ## Definition of Done
 
@@ -144,7 +142,10 @@ Close the seven high-severity findings from the architecture audit (docs/plans/a
 - **GHE support** — Resolved by M1: `extractRepo` is now host-agnostic, so GHE hosts work without a test instance.
 - **Timestamp consistency** — Resolved by M3: `attempts.started_at`/`finished_at` now store Unix nanos, matching the schema and the rest of the store.
 - **RepoRef identity** — Resolved by M2: documented as inert on the wire; a future daemon-side stable repository id is the named trigger to differentiate `ID`/`Name`.
-- **M7 contract gap** — `remote-contract §5` specifies progress fields the MVP adapter ignores. Still needs a design decision.
+- **M7 contract gap** — Resolved as a documented limitation: `remote-contract.md §5` now states
+  the MVP adapter ignores `last_activity_at`/`next_log_offset`/`logs` and that `Result` blocks
+  until terminal. Progress streaming remains the named v2 path. (The stub already mirrors this —
+  `handleGetRun` returns only `{"status": "running"}` during a run.)
 
 ---
 

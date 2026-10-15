@@ -165,6 +165,13 @@ It was briefly parked on [#12](https://github.com/seppaleinen/idle-deck/issues/1
 be a different question: #12 decided the *claim*, not the transport (D40/D41,
 [ADR 0018](../adr/0018-framework-agnostic-means-never-naming-a-vendor.md)).
 
+> **MVP limitation.** The MVP adapter (`harness/remote.go` `Result`) polls `GET /runs/{id}` but only
+> inspects `status == "terminal"` — it ignores `last_activity_at`, `next_log_offset`, and `logs`
+> entirely. From the worker's view `Result` blocks until the run is terminal, so no liveness signal is
+> surfaced and no `log` artifact is assembled incrementally during a run. This is documented, not a
+> bug to fix: the SSE note above already names the v2 path, and the conformance suite (§9a) does not
+> exercise these fields.
+
 ---
 
 ## 6. Result typing — `GET /runs/{id}` when terminal
