@@ -392,8 +392,8 @@ and clean the working tree.
       not build-time choice; A2A-platform adapters are a second Harness
       adapter (D41 trigger 3), not a config swap."
 - [x] Run D-id verification check (docs/adr/README.md §Verification) before
-      committing AGENTS.md. Passes (D70/D71 "failures" are `go.sum` hash
-      strings, not real citations).
+      committing AGENTS.md. Passes — the only "failures" are `go.sum` hash
+      strings that happen to match the `D[0-9]\+` pattern, not real citations.
 
 ### Phase 2 — Helm chart core (≈1–2 days)
 - [x] Scaffold + templates (namespace, SA, Secret, PVC, 2 Deployments,
