@@ -102,12 +102,31 @@ Close the seven high-severity findings from the architecture audit (docs/plans/a
 - H6: Consolidate `/health` — one implementation, wired into both `idle.HarnessIdlePolicy` and the remote server.
 - H7: Move sweep violation check to **after** artifact save, run on **all** outcomes (not just success-like).
 
-**Out of scope (defer to follow-up):**
-- M1 (GHE repo extraction) — requires a GHE test instance.
-- M2 (RepoRef.ID vs Name) — wire-level correctness is fine; refactor when the remote distinguishes them.
-- M3 (timestamp format consistency) — latent, not active.
+**Closed (resolved in follow-up passes):**
+- M1 (GHE repo extraction) — ✅ Fixed. `extractRepo` now strips the host generically instead of
+  hardcoding `github.com`. The host carries no trust decision (I1 allowlist authorizes the repo,
+  not the hostname). Test covers github.com, GHE, http/https, with/without scheme, with port.
+  (The brief's deferral reason — "requires a GHE test instance" — was over-cautious; the fix is
+  host-agnostic and needs no GHE instance.)
+- M2 (RepoRef.ID vs Name) — ✅ Closed as documentation. Tracing the consumption showed the remote's
+  `toWorkspace` reads only `repository.url`; both `ID` and `Name` are inert on the wire. The
+  contract example's distinct stable id (`repo-1`) has no daemon-side mechanism. An explanatory
+  comment at the construction site and an MVP note in `remote-contract.md §3` make the duplication
+  explicit. A future daemon-side stable repository id is named as the trigger to differentiate them
+  (D41-style). No behaviour change.
+- M3 (timestamp format consistency) — ✅ Fixed. All six write sites in `store/queue.go` now use
+  `UnixNano()` to match the `INTEGER` schema and the rest of the store. No schema change or
+  migration (no committed DB files; tests use ephemeral databases). The watermark column remains
+  RFC3339Nano by design (TEXT, v4 migration) and is out of scope.
+- M9 (OutcomePreempted leak) — ✅ Pinned. `OutcomePreempted` is internal state; the wire contract
+  maps it to `"cancelled"`. Added `TestOutcomePreemptedWireMapping` so the mapping cannot drift
+  silently.
+
+**Still open:**
 - M4 (Result backoff) — document the behavior instead of changing it.
-- M5–M11 — clean up after high-severity fixes land.
+- M5–M8 — clean up after high-severity fixes land (M4–M8 already fixed in PR #35).
+- M7 (contract gap) — `remote-contract §5` specifies progress fields the MVP adapter ignores.
+  Needs a design decision: implement progress streaming, or document it as a known MVP gap.
 
 ## Definition of Done
 
@@ -122,8 +141,10 @@ Close the seven high-severity findings from the architecture audit (docs/plans/a
 ## Remaining Risks
 
 - **Dashboard actions** — If H3 is fixed by removing `ProcessDashboardActions`, operators lose a debugging surface. The follow-up should provide a **read-only** dashboard that observes the queue without writing.
-- **GHE support** — M1 is a latent bug for operators using GitHub Enterprise. The fix requires a test instance or a stub that emulates GHE's URL shape.
-- **Timestamp consistency** — M3 is a maintenance risk. The fix is to standardize on one format (RFC3339Nano or Unix nanos) across all tables.
+- **GHE support** — Resolved by M1: `extractRepo` is now host-agnostic, so GHE hosts work without a test instance.
+- **Timestamp consistency** — Resolved by M3: `attempts.started_at`/`finished_at` now store Unix nanos, matching the schema and the rest of the store.
+- **RepoRef identity** — Resolved by M2: documented as inert on the wire; a future daemon-side stable repository id is the named trigger to differentiate `ID`/`Name`.
+- **M7 contract gap** — `remote-contract §5` specifies progress fields the MVP adapter ignores. Still needs a design decision.
 
 ---
 
