@@ -8,6 +8,17 @@ import (
 	"strings"
 )
 
+// defaultGitAuthor is the identity idle-deck uses for commits when the
+// ambient environment does not supply one. It is a fallback, not a
+// preference: the operator's configured identity always wins (see
+// withGitIdentity). Without this, `git commit` fails on machines with no
+// global user.name/user.email — CI is the canary, since the dev machine
+// happens to have one configured.
+const (
+	defaultGitAuthorName  = "idle-deck"
+	defaultGitAuthorEmail = "idle-deck@localhost"
+)
+
 // GitRunner runs git commands in a given directory.
 type GitRunner struct {
 	Dir string
@@ -20,11 +31,34 @@ func NewGitRunner(dir string) *GitRunner {
 
 // Run executes the git command and returns its combined output.
 // It does not interpret the exit code; the caller must check it.
+// Every command runs with a git identity applied: the ambient environment
+// is used unchanged when it already supplies one, otherwise the runner's
+// deterministic fallback is injected so commits never fail for want of
+// an author.
 func (g *GitRunner) Run(args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = g.Dir
+	cmd.Env = withGitIdentity(os.Environ())
 	out, err := cmd.CombinedOutput()
 	return string(out), err
+}
+
+// withGitIdentity returns env unchanged when the ambient environment already
+// supplies a git identity, and otherwise injects a deterministic one. It
+// checks the author email only: git requires both name and email, so an
+// email present means the identity is intentionally configured.
+func withGitIdentity(env []string) []string {
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "GIT_AUTHOR_EMAIL=") || strings.HasPrefix(kv, "GIT_COMMITTER_EMAIL=") {
+			return env
+		}
+	}
+	return append(env,
+		"GIT_AUTHOR_NAME="+defaultGitAuthorName,
+		"GIT_AUTHOR_EMAIL="+defaultGitAuthorEmail,
+		"GIT_COMMITTER_NAME="+defaultGitAuthorName,
+		"GIT_COMMITTER_EMAIL="+defaultGitAuthorEmail,
+	)
 }
 
 // RunError executes the git command and returns only the error.

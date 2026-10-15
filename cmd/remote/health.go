@@ -243,8 +243,8 @@ func (p *healthProbe) probeModel() bool {
 }
 
 var (
-	rpcIDMu  sync.Mutex
-	nextRPC  int
+	rpcIDMu sync.Mutex
+	nextRPC int
 )
 
 func nextRPCID() int {

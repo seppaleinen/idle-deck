@@ -41,7 +41,7 @@ func TestACP_RealOpencode(t *testing.T) {
 	initGitRepo(t, dir)
 
 	runner := NewACP(ACPConfig{
-		Bin: "opencode",
+		Bin:  "opencode",
 		Args: []string{"acp"},
 	})
 

@@ -106,7 +106,7 @@ var fields = []fieldMeta{
 	{name: "GitHubAPI", key: "IDLE_DECK_GITHUB_API", kind: kindString, default_: "https://api.github.com", flag: "github-api"},
 	{name: "RetryBackoffInitial", key: "IDLE_DECK_RETRY_BACKOFF_INITIAL", kind: kindDurationSeconds, default_: "30", flag: "retry-backoff-initial"},
 	{name: "RetryBackoffMax", key: "IDLE_DECK_RETRY_BACKOFF_MAX", kind: kindDurationSeconds, default_: "600", flag: "retry-backoff-max"},
-	{name: "SweepPeriod", key: "IDLE_DECK_SWEEP_PERIOD", kind: kindDurationSeconds, default_: "604800", flag: "sweep-period"},
+	{name: "SweepPeriod", key: "IDLE_DECK_SWEEP_PERIOD", kind: kindDurationSeconds, default_: "168h", flag: "sweep-period"},
 	{name: "SweepRepos", key: "IDLE_DECK_SWEEP_REPOS", kind: kindString, default_: "", flag: "sweep-repos"},
 	{name: "SweepPrompt", key: "IDLE_DECK_SWEEP_PROMPT", kind: kindString, default_: defaultSweepPrompt, flag: "sweep-prompt"},
 	{name: "DashboardAddr", key: "IDLE_DECK_DASHBOARD_ADDR", kind: kindString, default_: "127.0.0.1:8090", flag: "dashboard-addr"},

@@ -63,10 +63,10 @@ type WorkspaceManager struct {
 // githubToken: the repo-scoped token for git operations
 func NewWorkspaceManager(bareDir, baseDir, githubToken string) *WorkspaceManager {
 	return &WorkspaceManager{
-		BareDir:       bareDir,
-		BaseDir:       baseDir,
-		GitHubToken:   githubToken,
-		PR:            &ghPRCreator{token: githubToken},
+		BareDir:     bareDir,
+		BaseDir:     baseDir,
+		GitHubToken: githubToken,
+		PR:          &ghPRCreator{token: githubToken},
 	}
 }
 
@@ -125,10 +125,10 @@ func (w *WorkspaceManager) PrepareWorkspace(ws Workspace, attemptID string) (Wor
 	}
 
 	return Workspace{
-		RepoURL:   ws.RepoURL,
-		TicketID:  ws.TicketID,
-		Branch:    returnBranch,
-		Dir:       worktreeDir,
+		RepoURL:  ws.RepoURL,
+		TicketID: ws.TicketID,
+		Branch:   returnBranch,
+		Dir:      worktreeDir,
 	}, nil
 }
 
@@ -229,9 +229,9 @@ func (w *WorkspaceManager) OnSuccess(worktree Workspace, ws Workspace, attemptID
 
 	// Return the pull_request artifact.
 	return Artifact{
-		Kind:  "pull_request",
-		URI:   prURL,
-		Body:  "", // not used for pull_request
+		Kind: "pull_request",
+		URI:  prURL,
+		Body: "", // not used for pull_request
 	}, nil
 }
 

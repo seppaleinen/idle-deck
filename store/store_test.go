@@ -114,6 +114,7 @@ func TestLeaseExpiryRecordsTimeout(t *testing.T) {
 	// The task is re-claimed by the second Dequeue, so state is 'running'.
 	// The important assertion is that attempt 1 outcome is 'timeout'.
 }
+
 // TestEnqueueIdempotentSameKeyDifferentID is the real invariant: two tasks
 // with the same dedupe_key but different IDs must not coexist. The existing
 // TestEnqueueIdempotent only enqueues the same task twice, which exercises the

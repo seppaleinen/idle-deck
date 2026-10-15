@@ -35,10 +35,10 @@ type SessionID string
 // StartRequest carries everything the runner needs to execute a task.
 // It mirrors harness.RunRequest over the wire: a role, never a model (D6, I11).
 type StartRequest struct {
-	Role           string   // plan | do | sweep
-	Prompt         string
-	Budget         int      // generation tokens — ceiling the runner respects (D37)
-	Findings       []Finding // populated by the sweep agent (D43)
+	Role     string // plan | do | sweep
+	Prompt   string
+	Budget   int       // generation tokens — ceiling the runner respects (D37)
+	Findings []Finding // populated by the sweep agent (D43)
 }
 
 // RunResult is the terminal result of a session, mirroring harness.RunResult.
@@ -49,10 +49,10 @@ type RunResult struct {
 
 // Artifact is a typed artifact produced by a run (I4, I5).
 type Artifact struct {
-	Kind          string   // comment | pull_request | branch | report | log
-	BranchPurpose *string  // feature | debug (only for kind=branch)
+	Kind          string  // comment | pull_request | branch | report | log
+	BranchPurpose *string // feature | debug (only for kind=branch)
 	URI           string
-	Body          string   // only for kind=comment
+	Body          string    // only for kind=comment
 	Findings      []Finding // for kind=report (D43)
 }
 
@@ -78,8 +78,8 @@ const (
 // Workspace is the checkout the runner executes in. The server owns it (D27):
 // it provisions the worktree, and it tears it down per the lifecycle.
 type Workspace struct {
-	RepoURL   string // allowlisted clone URL (I1 already gated this at ingestion)
-	TicketID  string // for feature/<ticket_id>-<slug> branch names (D15)
-	Branch    string // base branch to check out, empty = default
-	Dir       string // absolute path of the worktree the runner executes in
+	RepoURL  string // allowlisted clone URL (I1 already gated this at ingestion)
+	TicketID string // for feature/<ticket_id>-<slug> branch names (D15)
+	Branch   string // base branch to check out, empty = default
+	Dir      string // absolute path of the worktree the runner executes in
 }

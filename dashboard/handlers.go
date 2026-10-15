@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/seppaleinen/idle-deck/config"
 	"github.com/seppaleinen/idle-deck/queue"
-	"github.com/google/uuid"
 )
 
 type statusResponse struct {
@@ -39,12 +39,12 @@ type Repo struct {
 }
 
 type Harness struct {
-	URL        string    `json:"url"`
-	Reachable  bool      `json:"reachable"`
-	Status     int       `json:"status_code,omitempty"`
-	Error      string    `json:"error,omitempty"`
-	ProbedAt   time.Time `json:"probed_at"`
-	Body       string    `json:"body,omitempty"`
+	URL       string    `json:"url"`
+	Reachable bool      `json:"reachable"`
+	Status    int       `json:"status_code,omitempty"`
+	Error     string    `json:"error,omitempty"`
+	ProbedAt  time.Time `json:"probed_at"`
+	Body      string    `json:"body,omitempty"`
 }
 
 type Queue struct {
@@ -249,16 +249,16 @@ func (s *Server) handleAttempts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	type attempt struct {
-		ID              string     `json:"id"`
-		TaskID          string     `json:"task_id"`
-		Tier            string     `json:"tier"`
-		TaskState       string     `json:"task_state"`
-		TicketURL       string     `json:"ticket_url"`
-		Ordinal         int        `json:"ordinal"`
-		Outcome         string     `json:"outcome"`
-		StartedAt       *time.Time `json:"started_at,omitempty"`
-		FinishedAt      *time.Time `json:"finished_at,omitempty"`
-		RemoteSessionID string     `json:"remote_session_id,omitempty"`
+		ID              string        `json:"id"`
+		TaskID          string        `json:"task_id"`
+		Tier            string        `json:"tier"`
+		TaskState       string        `json:"task_state"`
+		TicketURL       string        `json:"ticket_url"`
+		Ordinal         int           `json:"ordinal"`
+		Outcome         string        `json:"outcome"`
+		StartedAt       *time.Time    `json:"started_at,omitempty"`
+		FinishedAt      *time.Time    `json:"finished_at,omitempty"`
+		RemoteSessionID string        `json:"remote_session_id,omitempty"`
 		Artifacts       []ArtifactRow `json:"artifacts"`
 	}
 	var out []attempt
@@ -442,19 +442,19 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	type taskRow struct {
-		ID            string     `json:"id"`
-		RepositoryID  string     `json:"repository_id"`
-		Tier          string     `json:"tier"`
-		State         string     `json:"state"`
-		Prompt        string     `json:"prompt"`
-		TicketURL     string     `json:"ticket_url"`
-		CreatedAt     int64      `json:"created_at"`
-		TimeoutSecs   int        `json:"timeout_seconds"`
-		Budget        int        `json:"budget"`
-		AttemptID     string     `json:"attempt_id,omitempty"`
-		Outcome       string     `json:"outcome,omitempty"`
-		StartedAt     *time.Time `json:"started_at,omitempty"`
-		FinishedAt    *time.Time `json:"finished_at,omitempty"`
+		ID           string     `json:"id"`
+		RepositoryID string     `json:"repository_id"`
+		Tier         string     `json:"tier"`
+		State        string     `json:"state"`
+		Prompt       string     `json:"prompt"`
+		TicketURL    string     `json:"ticket_url"`
+		CreatedAt    int64      `json:"created_at"`
+		TimeoutSecs  int        `json:"timeout_seconds"`
+		Budget       int        `json:"budget"`
+		AttemptID    string     `json:"attempt_id,omitempty"`
+		Outcome      string     `json:"outcome,omitempty"`
+		StartedAt    *time.Time `json:"started_at,omitempty"`
+		FinishedAt   *time.Time `json:"finished_at,omitempty"`
 	}
 	var out []taskRow
 	for rows.Next() {
@@ -484,9 +484,9 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 		out = []taskRow{}
 	}
 	s.respondJSON(w, r, http.StatusOK, map[string]interface{}{
-		"tasks": out,
-		"total": total,
-		"limit": limit,
+		"tasks":  out,
+		"total":  total,
+		"limit":  limit,
 		"offset": offset,
 	})
 }
