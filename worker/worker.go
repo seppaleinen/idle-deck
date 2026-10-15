@@ -327,6 +327,14 @@ func (w *Worker) buildRunRequest(task queue.Task, lease queue.Lease) harness.Run
 		Budget:  budget,
 		Timeout: timeout,
 		RepoRef: harness.Repository{
+			// Both ID and Name carry task.RepositoryID (the tracker's
+			// owner/repo string, e.g. "seppaleinen/idle-deck"). No
+			// daemon-side stable repo id exists yet — the remote's
+			// toWorkspace reads only repo.URL, so both fields are
+			// currently inert on the wire. The conformance suite (C1–C9)
+			// exercises this wire shape, not identity semantics. A future
+			// daemon-side id (e.g. a hash of the allowlist entry) would be
+			// a D41-style trigger to differentiate them.
 			ID:      task.RepositoryID,
 			Name:    task.RepositoryID,
 			Tracker: task.Ticket.Tracker,

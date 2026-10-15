@@ -112,6 +112,10 @@ Request body:
 }
 ```
 
+**MVP note:** The MVP sends `id = name = owner/repo` (no daemon-side stable repository ID exists).
+The remote ignores both fields — `toWorkspace` uses only `repository.url`. Future versions may
+populate `id` with a stable identifier when the daemon maintains its own repository registry.
+
 (Shape mirrors the locked `RunRequest` in [`boundaries.md`](boundaries.md); note `Allowlisted` is not
 sent — I1 is enforced by `TrackerSource.Parse` at ingestion, and the remote only ever receives a
 repo it was already told to accept.)
