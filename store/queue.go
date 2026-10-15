@@ -173,7 +173,7 @@ func (q *SQLiteQueue) tryClaim(ctx context.Context) (queue.Lease, error) {
 UPDATE attempts
    SET outcome = 'timeout', finished_at = ?
 WHERE outcome = '' AND started_at IS NOT NULL AND started_at < ?`,
-		now.Format(time.RFC3339Nano), cutoff.Format(time.RFC3339Nano)); err != nil {
+		now.UnixNano(), cutoff.UnixNano()); err != nil {
 		tx.Rollback()
 		return queue.Lease{}, fmt.Errorf("store: reclaim: %w", err)
 	}
@@ -182,7 +182,7 @@ UPDATE tasks SET state = 'queued'
 WHERE state = 'running' AND id IN (
   SELECT a.task_id FROM attempts a
   WHERE a.outcome = 'timeout' AND a.started_at IS NOT NULL AND a.started_at < ?)`,
-		cutoff.Format(time.RFC3339Nano)); err != nil {
+		cutoff.UnixNano()); err != nil {
 		tx.Rollback()
 		return queue.Lease{}, fmt.Errorf("store: reclaim requeue: %w", err)
 	}
@@ -227,7 +227,7 @@ SELECT id, tier,
 	_, err = tx.ExecContext(ctx, `
 INSERT INTO attempts (id, task_id, ordinal, outcome, started_at, timeout_seconds, remote_session_id)
 VALUES (?, ?, ?, '', ?, ?, '')`,
-		attemptID, taskID, ordinal, now.Format(time.RFC3339Nano), -1)
+		attemptID, taskID, ordinal, now.UnixNano(), -1)
 	if err != nil {
 		tx.Rollback()
 		return queue.Lease{}, fmt.Errorf("store: attempt insert: %w", err)
@@ -275,7 +275,7 @@ UPDATE attempts
    SET outcome = 'succeeded', finished_at = ?
 WHERE id = ? AND task_id = ? AND outcome = ''
 `,
-		now.Format(time.RFC3339Nano), attemptID, lease.TaskID)
+		now.UnixNano(), attemptID, lease.TaskID)
 	if err != nil {
 		tx.Rollback()
 		return fmt.Errorf("store: ack update attempt: %w", err)
@@ -334,7 +334,7 @@ UPDATE attempts
    SET outcome = ?, finished_at = ?
 WHERE id = ? AND task_id = ? AND outcome = ''
 `,
-		string(outcome), now.Format(time.RFC3339Nano), attemptID, lease.TaskID)
+		string(outcome), now.UnixNano(), attemptID, lease.TaskID)
 	if err != nil {
 		tx.Rollback()
 		return fmt.Errorf("store: nack update attempt: %w", err)
@@ -442,7 +442,7 @@ func (q *SQLiteQueue) CancelTask(ctx context.Context, taskID string) error {
 		UPDATE attempts
 		   SET outcome = 'preempted', finished_at = ?
 		WHERE task_id = ? AND outcome = ''
-	`, now.Format(time.RFC3339Nano), taskID)
+	`, now.UnixNano(), taskID)
 	if err != nil {
 		return fmt.Errorf("store: cancel attempt: %w", err)
 	}
