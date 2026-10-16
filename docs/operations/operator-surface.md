@@ -176,6 +176,7 @@ override one value for one run without editing anything.
 | `IDLE_DECK_SWEEP_PERIOD` | `168h` (7 days) | D43; `0` disables sweeping entirely |
 | `IDLE_DECK_SWEEP_REPOS` | *unset* = every allowlisted repo | D43; a narrowing subset, never a second allowlist |
 | `IDLE_DECK_SWEEP_PROMPT` | the stale-TODO/FIXME default below | D43 |
+| `IDLE_DECK_YIELD_WHEN_BUSY` | `false` | D49: when on, a `busy: true` /health answer makes the probe report not-idle |
 
 `IDLE_DECK_SWEEP_PERIOD` is the **bucket period**, and it is operator-owned rather than a built-in
 schedule. `0` is the global kill switch. There is no adaptive backoff: a sweep that finds nothing
@@ -287,7 +288,10 @@ separate logging subsystem.
 - **last successful poll per repository, with its watermark** — the number that tells you whether
   ingestion is silently stuck
 - the active task: its tier, role, attempt, and how long it has been running
-- harness reachability, and the outcome of the most recent call
+- harness reachability — and, when `IDLE_DECK_YIELD_WHEN_BUSY` is on, whether the probe
+  treated the remote as **idle** or **busy** (D49). A "reachable but busy" answer that the
+  operator did not expect is visible here rather than only inferable from a stalled
+  interactive session
 - the most recent escalation, if any
 
 That last-poll-plus-watermark pair is the one an operator actually needs at 2am, because a daemon

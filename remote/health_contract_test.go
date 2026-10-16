@@ -22,7 +22,7 @@ func TestHealthProducerConsumerContract(t *testing.T) {
 	srv := httptest.NewServer(producer.Routes())
 	defer srv.Close()
 
-	consumer := idle.NewHarnessIdlePolicy(srv.URL, "")
+	consumer := idle.NewHarnessIdlePolicy(srv.URL, "", false)
 
 	// Producer reports reachable → consumer must certify idle.
 	idle, err := consumer.Idle(t.Context())
@@ -63,5 +63,11 @@ func TestHealthProducerShape(t *testing.T) {
 	}
 	if _, ok := body["model"]; !ok {
 		t.Fatalf("producer omits model: %v", body)
+	}
+	// D49: the producer must emit `busy` unconditionally — it is load-bearing
+	// even when the gate is off, because the field is what makes the gate
+	// possible. A harness that drops it fails the contract pin.
+	if _, ok := body["busy"]; !ok {
+		t.Fatalf("producer omits busy (D49): %v", body)
 	}
 }

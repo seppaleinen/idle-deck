@@ -668,7 +668,7 @@ func TestHarnessHealthReachability(t *testing.T) {
 	}
 
 	// Model down but process alive → NOT idle (D31)
-	state.SetHealth(false, "stub-gpt-4o")
+	state.SetHealth(false, false, "stub-gpt-4o")
 	h2 := checkHealth(t, base)
 	if h2.Reachable {
 		t.Error("health: expected unreachable when model down")

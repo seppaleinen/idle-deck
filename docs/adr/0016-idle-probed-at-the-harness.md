@@ -1,8 +1,8 @@
 ---
 Title:   Idle is probed at the harness, and /health must report model reachability
-Status:  accepted
-Supersedes: 0003
-Related: D31, D5, D6, D7, D20, D27, I8, 0006, 0013, 0014
+Status:  superseded
+Superseded by: 0022
+Related: D31, D49, D5, D6, D7, D20, D27, I8, 0006, 0013, 0014
 Source:   #11 Install, run, configure: the operator and developer surface
 ---
 

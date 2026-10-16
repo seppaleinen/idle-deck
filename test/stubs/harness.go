@@ -70,9 +70,13 @@ type HarnessFinding struct {
 	Severity    string `json:"severity,omitempty"`
 }
 
-// HealthResponse represents the /health endpoint response.
+// HealthResponse represents the /health endpoint response. Mirrors
+// remote.healthResponse (remote-contract.md §2) exactly: the producer emits
+// `reachable`, `busy`, and `model`, and the sole consumer (idle.HarnessIdlePolicy)
+// reads them. `busy` is D49 — the remote is occupied by a run it is executing.
 type HealthResponse struct {
 	Reachable bool   `json:"reachable"`
+	Busy      bool   `json:"busy"`
 	Model     string `json:"model"`
 }
 
@@ -110,11 +114,15 @@ func NewHarnessState(model string) *HarnessState {
 	}
 }
 
-// SetHealth sets the health response.
-func (s *HarnessState) SetHealth(reachable bool, model string) {
+// SetHealth sets the health response. `busy` is the D49 capacity field: the
+// remote is occupied by a run it is currently executing. Callers that do not
+// care about capacity pass false (the default), preserving the old two-arg
+// shape's behaviour for any caller not yet updated.
+func (s *HarnessState) SetHealth(reachable, busy bool, model string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.Health.Reachable = reachable
+	s.Health.Busy = busy
 	s.Health.Model = model
 }
 
@@ -313,8 +321,29 @@ func (s *HarnessServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// D49: `busy` is derived from the stub's own run state, exactly as the
+	// real remote.Server derives it (remote/server.go hasRunningRun) — a run
+	// still executing means the remote is occupied. This keeps the stub honest
+	// about the field's semantics rather than letting a test set it by hand.
+	s.State.mu.Lock()
+	h := s.State.Health
+	h.Busy = s.State.hasRunningRunLocked()
+	s.State.mu.Unlock()
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(s.State.Health)
+	json.NewEncoder(w).Encode(h)
+}
+
+// hasRunningRunLocked reports whether any run in the stub is still executing.
+// The caller must hold s.State.mu. It is the stub's source of the /health
+// `busy` field (D49).
+func (s *HarnessState) hasRunningRunLocked() bool {
+	for _, run := range s.Runs {
+		if run.Status == "running" {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *HarnessServer) handleRuns(w http.ResponseWriter, r *http.Request) {

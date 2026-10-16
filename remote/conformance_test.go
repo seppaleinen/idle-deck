@@ -244,6 +244,72 @@ func TestHealthModelDown(t *testing.T) {
 	}
 }
 
+// TestHealthBusyIsClientObservable (D49 / conformance case C10) pins the `busy`
+// field on /health — a client-observable property of the wire contract, so a
+// harness that drops it, renames it, or emits a wrong value fails the suite
+// rather than silently passing. The remote reports busy from its own run
+// state: a run still executing means the remote is occupied.
+//
+// This is the case that makes the D49 field load-bearing. It is written
+// against the real remote.Server (not a stub) so it exercises hasRunningRun
+// on the server's own Runs map.
+func TestHealthBusyIsClientObservable(t *testing.T) {
+	// Idle remote: no runs → busy=false, and the field is present.
+	srv, _ := newTestServer(t)
+	resp, raw := driveHTTP(t, srv, http.MethodGet, "/health", "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("idle health: code=%d", resp.StatusCode)
+	}
+	var h healthResponse
+	if err := unmarshalJSON(raw, &h); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !h.Reachable {
+		t.Fatalf("idle health: want reachable=true, got false")
+	}
+	if h.Model != "stub-model" {
+		t.Fatalf("idle health: model=%q, want stub-model", h.Model)
+	}
+	if h.Busy {
+		t.Fatalf("idle health: want busy=false with no running run")
+	}
+
+	// Start a run and poll until the runner has it in flight, then re-probe:
+	// the remote is now occupied, so busy must flip to true.
+	code, id := startRun(t, srv, "c10", "do", "p", 1000, 60)
+	if code != http.StatusCreated {
+		t.Fatalf("start: code=%d, want 201", code)
+	}
+	// Wait until the runner has the run in flight (StatusRunning), so the
+	// busy probe below is taken against an actually-occupied remote.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, out := getRun(t, srv, id); out.Status == string(StatusRunning) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	var busyResp healthResponse
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		_, r := driveHTTP(t, srv, http.MethodGet, "/health", "")
+		if err := unmarshalJSON(r, &busyResp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if busyResp.Busy {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !busyResp.Busy {
+		t.Fatalf("busy health: a running run must make busy=true (D49), got %+v", busyResp)
+	}
+	if !busyResp.Reachable {
+		t.Fatalf("busy health: model still reachable while a run executes")
+	}
+	t.Logf("C10: /health emits busy=true when a run is executing (D49)")
+}
+
 // newTestServer creates a test server with a stub runner.
 func newTestServer(t *testing.T) (*Server, *stubRunner) {
 	t.Helper()

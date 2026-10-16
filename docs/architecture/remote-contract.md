@@ -13,14 +13,18 @@ error taxonomy, and one worked example per result shape.
 [D29](https://github.com/seppaleinen/idle-deck/blob/main/AGENTS.md) — `idle-ready`, not `status: ready`
 — as fixed by [GitHub event contract #9](https://github.com/seppaleinen/idle-deck/issues/9).
 
-**Amended twice, on the authority of new decisions** (this file states that a deviation from its
-locked status "is a new decision", so neither edit below was made in place):
+**Amended three times, on the authority of new decisions** (this file states that a deviation from its
+locked status "is a new decision", so none of the edits below were made in place):
 
 - `GET /health` must report **model reachability**, not process liveness — [ADR
   0016](../adr/0016-idle-probed-at-the-harness.md), from [Install, run, configure
   #11](https://github.com/seppaleinen/idle-deck/issues/11).
 - `budget` is a **generation-token ceiling**; the field was previously unit-less — **D37**, same
   ticket.
+- `GET /health` gains a **`busy` boolean** — **idle = reachable AND not busy** — [ADR
+  0022](../adr/0022-idle-means-reachable-and-has-capacity.md), amending D31. The gate is opt-in
+  via `IDLE_DECK_YIELD_WHEN_BUSY` (default `false`); the *field* is load-bearing and is emitted
+  unconditionally by the producer.
 
 ---
 
@@ -74,7 +78,7 @@ All under `{base_url}/v1`.
 | `POST /runs` | `Start` | Create a run (idempotent by `attempt_id`). |
 | `GET /runs/{id}` | `Result` (adapter polls internally) | Status while running; terminal result + artifacts when done. |
 | `DELETE /runs/{id}` | `Abort` | Cancel a running run; `204` only when confirmed dead. |
-| `GET /health` | `IdlePolicy` probe (D5, D31) | If it answers, the engine is considered idle. **Must reflect model reachability, not merely process liveness** — see below. |
+| `GET /health` | `IdlePolicy` probe (D5, D31, D49) | If it answers, the engine is considered idle. **Must report model reachability, not merely process liveness** — see below. **Also reports `busy`** — idle means reachable AND not busy (D49). |
 
 ---
 
@@ -84,6 +88,34 @@ limited, or out of credentials is **not idle**, and a plain liveness ping would 
 idle-deck would then start a run that fails immediately, having certified the machine was free. This
 is the one semantic requirement ADR 0016 attaches to the endpoint, and it is what makes "if it
 answers" mean what D5 means by "idle-deck can reach the model".
+
+**`/health` response shape** (amended by ADR 0022 / D49):
+
+```json
+{
+  "reachable": true,
+  "busy": false,
+  "model": "opencode/big-pickle"
+}
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `reachable` | bool | The model can actually generate right now (not merely that the process is alive). False ⇒ not idle, regardless of `busy`. |
+| `busy` | bool | The remote is occupied by a run it is currently executing. A *courtesy* signal: the remote cannot see model contention it did not schedule. |
+| `model` | string | The model name the probe reached, for operator visibility. |
+
+**Idle is `reachable == true && busy == false`** (D49). The producer emits `busy` unconditionally;
+the consumer reads it and gates on it only when `IDLE_DECK_YIELD_WHEN_BUSY` is set, which defaults
+to `false` — so every existing deployment observes the reachable-only behaviour of D31, and the
+field is load-bearing (it must exist and be correct) even when the gate is off.
+
+**Where `busy` comes from.** The remote reports it from its own run state: a run in
+`StatusRunning` means the remote is occupied. This is the strongest signal this system can
+honestly produce — idle-deck names no model, provider, or vendor (D6/D40) and does not host
+models (D20), so it has no direct view of model load, and the remote is the one component that
+knows its own occupancy. The field answers "may I start?" with the minimal shape the single-slot
+scheduler (D8) can act on: a boolean, not a metric with a threshold to tune.
 
 ---
 

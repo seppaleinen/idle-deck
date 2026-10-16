@@ -181,20 +181,43 @@ func (s *Server) handleRunByID(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleHealth implements GET /health — model reachability, not liveness (D31).
+// handleHealth implements GET /health — model reachability AND capacity (D31, D49).
+//
+// `reachable` comes from the Health hook (a real ACP round-trip — see
+// cmd/remote/health.go): it is false when the model cannot generate right now.
+//
+// `busy` is this server's own knowledge of its occupancy (D49): true when any
+// run in this server is still executing. It is a courtesy signal — the remote
+// cannot see model contention it did not schedule — and it is what lets the
+// daemon yield instead of starting a run that would compete for the same
+// accelerator. The producer emits it unconditionally; the consumer gates on it
+// only behind IDLE_DECK_YIELD_WHEN_BUSY (default false).
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		errorJSON(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET only")
 		return
 	}
 	reachable, model := s.Health()
-	if !reachable {
-		// Alive but model down: NOT idle. The worker's IdlePolicy treats
-		// this as busy, so no run is started against a dead model.
-		marshalJSON(w, http.StatusOK, healthResponse{Reachable: false, Model: model})
-		return
+	marshalJSON(w, http.StatusOK, healthResponse{
+		Reachable: reachable,
+		Busy:      s.hasRunningRun(),
+		Model:     model,
+	})
+}
+
+// hasRunningRun reports whether any run in this server is still executing.
+// It is the source of the /health `busy` field (D49). Checked under the
+// server's lock so a run that transitions to terminal between the check and
+// the response cannot be reported as busy.
+func (s *Server) hasRunningRun() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, run := range s.Runs {
+		if run.Status == StatusRunning {
+			return true
+		}
 	}
-	marshalJSON(w, http.StatusOK, healthResponse{Reachable: true, Model: model})
+	return false
 }
 
 // startRequest is the wire shape of POST /v1/runs (remote-contract.md §3).

@@ -24,7 +24,7 @@ func TestIdlePolicy_ReachableTrue(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewHarnessIdlePolicy(srv.URL, "test-token")
+	p := NewHarnessIdlePolicy(srv.URL, "test-token", false)
 	idle, err := p.Idle(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -43,7 +43,7 @@ func TestIdlePolicy_ReachableFalse(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewHarnessIdlePolicy(srv.URL, "")
+	p := NewHarnessIdlePolicy(srv.URL, "", false)
 	idle, err := p.Idle(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -60,7 +60,7 @@ func TestIdlePolicy_HTTP5xx(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewHarnessIdlePolicy(srv.URL, "")
+	p := NewHarnessIdlePolicy(srv.URL, "", false)
 	idle, err := p.Idle(context.Background())
 	if err == nil {
 		t.Fatal("expected error for 500, got nil")
@@ -73,7 +73,7 @@ func TestIdlePolicy_HTTP5xx(t *testing.T) {
 // Test 3b: Connection refused → Idle() returns false, error.
 func TestIdlePolicy_ConnectionRefused(t *testing.T) {
 	// Use an invalid port on localhost to force connection refused.
-	p := NewHarnessIdlePolicy("http://127.0.0.1:1", "")
+	p := NewHarnessIdlePolicy("http://127.0.0.1:1", "", false)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
@@ -95,7 +95,7 @@ func TestIdlePolicy_Timeout(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewHarnessIdlePolicy(srv.URL, "")
+	p := NewHarnessIdlePolicy(srv.URL, "", false)
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 
@@ -117,7 +117,7 @@ func TestIdlePolicy_MalformedJSON(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewHarnessIdlePolicy(srv.URL, "")
+	p := NewHarnessIdlePolicy(srv.URL, "", false)
 	idle, err := p.Idle(context.Background())
 	if err == nil {
 		t.Fatal("expected error for malformed JSON, got nil")
@@ -136,7 +136,7 @@ func TestIdlePolicy_MissingReachableField(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewHarnessIdlePolicy(srv.URL, "")
+	p := NewHarnessIdlePolicy(srv.URL, "", false)
 	idle, err := p.Idle(context.Background())
 	if err == nil {
 		t.Fatal("expected error for missing reachable field, got nil")
@@ -157,10 +157,123 @@ func TestIdlePolicy_BearerTokenSent(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewHarnessIdlePolicy(srv.URL, "secret-token")
+	p := NewHarnessIdlePolicy(srv.URL, "secret-token", false)
 	_, _ = p.Idle(context.Background())
 
 	if capturedAuth != "Bearer secret-token" {
 		t.Fatalf("expected Authorization 'Bearer secret-token', got %q", capturedAuth)
+	}
+}
+
+// Test 6a (D49, default): a busy model is still idle when the gate is off.
+// This is the backward-compatible behaviour — every existing deployment
+// observes reachable-only gating regardless of what the producer reports.
+func TestIdlePolicy_BusyIgnoredWhenGateOff(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"reachable": true,
+			"busy":      true,
+		})
+	}))
+	defer srv.Close()
+
+	p := NewHarnessIdlePolicy(srv.URL, "", false)
+	idle, err := p.Idle(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !idle {
+		t.Fatal("gate off: busy model should still be idle (D49 default)")
+	}
+}
+
+// Test 6b (D49, gate on): a busy model is not idle when the operator opted in.
+func TestIdlePolicy_BusyBlocksWhenGateOn(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"reachable": true,
+			"busy":      true,
+		})
+	}))
+	defer srv.Close()
+
+	p := NewHarnessIdlePolicy(srv.URL, "", true)
+	idle, err := p.Idle(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if idle {
+		t.Fatal("gate on: busy model must not be idle (D49)")
+	}
+}
+
+// Test 6c (D49): reachable + not busy + gate on → idle. The gate only fires
+// on a busy answer; a free reachable model is idle either way.
+func TestIdlePolicy_NotBusyIsIdleWithGateOn(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"reachable": true,
+			"busy":      false,
+		})
+	}))
+	defer srv.Close()
+
+	p := NewHarnessIdlePolicy(srv.URL, "", true)
+	idle, err := p.Idle(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !idle {
+		t.Fatal("gate on: free reachable model must be idle (D49)")
+	}
+}
+
+// Test 6d (D49): a producer that omits `busy` entirely (pre-D49 harness) must
+// not error and must not be treated as busy. The field is optional for
+// backward compatibility; missing means not-busy, never an error.
+func TestIdlePolicy_MissingBusyFieldIsNotBusy(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]bool{"reachable": true})
+	}))
+	defer srv.Close()
+
+	p := NewHarnessIdlePolicy(srv.URL, "", true)
+	idle, err := p.Idle(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !idle {
+		t.Fatal("missing busy field: must not be treated as busy (D49)")
+	}
+}
+
+// Test 6e (D49): reachability still wins — an unreachable model is not idle
+// regardless of busy, with the gate on. Reachability is checked first.
+func TestIdlePolicy_UnreachableWinsOverBusy(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"reachable": false,
+			"busy":      true,
+		})
+	}))
+	defer srv.Close()
+
+	p := NewHarnessIdlePolicy(srv.URL, "", true)
+	idle, err := p.Idle(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if idle {
+		t.Fatal("unreachable: must not be idle even when gate is on (D49)")
 	}
 }

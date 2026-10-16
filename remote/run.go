@@ -252,6 +252,7 @@ type outcomeResponse struct {
 
 type healthResponse struct {
 	Reachable bool   `json:"reachable"`
+	Busy      bool   `json:"busy"` // D49: the remote is occupied by a run it is executing
 	Model     string `json:"model"`
 }
 

@@ -111,6 +111,11 @@ var fields = []fieldMeta{
 	{name: "SweepPrompt", key: "IDLE_DECK_SWEEP_PROMPT", kind: kindString, default_: defaultSweepPrompt, flag: "sweep-prompt"},
 	{name: "DashboardAddr", key: "IDLE_DECK_DASHBOARD_ADDR", kind: kindString, default_: "127.0.0.1:8090", flag: "dashboard-addr"},
 	{name: "DashboardActions", key: "IDLE_DECK_DASHBOARD_ACTIONS", kind: kindBool, default_: "false", flag: "dashboard-actions"},
+	// D49: the capacity gate. Default false preserves D31's reachable-only
+	// behaviour for every existing deployment; on, a busy /health answer makes
+	// the probe report not-idle so the worker yields instead of starting a run
+	// that would compete for the same accelerator.
+	{name: "YieldWhenBusy", key: "IDLE_DECK_YIELD_WHEN_BUSY", kind: kindBool, default_: "false", flag: "yield-when-busy"},
 }
 
 // Config holds the resolved idle-deck configuration.
@@ -143,6 +148,7 @@ type Config struct {
 	SweepPrompt         string
 	DashboardAddr       string
 	DashboardActions    bool
+	YieldWhenBusy       bool // D49: capacity gate, default false
 }
 
 // MissingVarError names the required variables that are absent or empty.

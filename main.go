@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -220,7 +221,7 @@ func runRun(args []string) int {
 
 	h := harness.NewRemoteHarness(cfg.HarnessURL, cfg.HarnessToken)
 
-	idlePolicy := idle.NewHarnessIdlePolicy(cfg.HarnessURL, cfg.HarnessToken)
+	idlePolicy := idle.NewHarnessIdlePolicy(cfg.HarnessURL, cfg.HarnessToken, cfg.YieldWhenBusy)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -427,9 +428,32 @@ func runStatus(args []string) int {
 		if err != nil {
 			fmt.Printf("  Reachability: unreachable (%v)\n", err)
 		} else {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
 				fmt.Println("  Reachability: reachable")
+				// D49: surface the busy field so a "reachable but busy" answer is
+				// visible to the operator rather than only inferable from a
+				// stalled interactive session. The field is optional for a
+				// pre-D49 harness; missing means not-busy.
+				var health struct {
+					Reachable *bool `json:"reachable"`
+					Busy      *bool `json:"busy"`
+					Model     string `json:"model"`
+				}
+				if err := json.Unmarshal(body, &health); err == nil {
+					switch {
+					case health.Busy != nil && *health.Busy:
+						fmt.Println("  Capacity:   busy (remote occupied by a run it is executing)")
+					case cfg.YieldWhenBusy:
+						fmt.Println("  Capacity:   free (yield-when-busy is on, but the remote is not busy)")
+					default:
+						fmt.Println("  Capacity:   free (IDLE_DECK_YIELD_WHEN_BUSY is off — busy answers are ignored)")
+					}
+					if health.Model != "" {
+						fmt.Printf("  Model:      %s\n", health.Model)
+					}
+				}
 			} else {
 				fmt.Printf("  Reachability: status %d\n", resp.StatusCode)
 			}

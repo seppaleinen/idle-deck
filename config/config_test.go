@@ -114,6 +114,14 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.Repos != "acme/widgets" {
 		t.Errorf("Repos = %q, want acme/widgets", cfg.Repos)
 	}
+	if cfg.DashboardActions {
+		t.Error("DashboardActions default = true, want false")
+	}
+	// D49: the capacity gate defaults off, preserving D31's reachable-only
+	// behaviour for every existing deployment.
+	if cfg.YieldWhenBusy {
+		t.Error("YieldWhenBusy default = true, want false (D49)")
+	}
 }
 
 func TestDurationSecondsParsing(t *testing.T) {
@@ -411,5 +419,8 @@ func allEnvVars() []string {
 		"IDLE_DECK_SWEEP_PERIOD",
 		"IDLE_DECK_SWEEP_REPOS",
 		"IDLE_DECK_SWEEP_PROMPT",
+		"IDLE_DECK_DASHBOARD_ADDR",
+		"IDLE_DECK_DASHBOARD_ACTIONS",
+		"IDLE_DECK_YIELD_WHEN_BUSY", // D49
 	}
 }
