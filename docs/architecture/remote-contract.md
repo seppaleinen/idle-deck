@@ -154,6 +154,12 @@ grace period covering worst-case retry + lease expiry; a `Start` beyond it is a 
 The adapter keeps `Harness.Result` blocking from the worker's view by **polling a status endpoint**
 internally. No SSE in the MVP.
 
+**Error handling during polling:** the adapter does not back off internally on retryable HTTP errors
+(429, 5xx). It returns immediately with a typed error so the **worker's own backoff governs retries**
+(D14, §7). A 404 maps to non-retryable failure (unknown run id implies lost state; escalating beats
+looping). Only transient network errors continue polling with internal backoff. A hard 24h safety cap
+stops polling if the server never reports terminal.
+
 | Response (while running) | Meaning |
 |---|---|
 | `200` `{ "status": "running", "last_activity_at": "...", "next_log_offset": 0, "logs": ["..."] }` | Alive signal: a 3-hour P2 is verifiably not hung. `logs` returns **incremental** chunks (client passes `?log_offset=`). |

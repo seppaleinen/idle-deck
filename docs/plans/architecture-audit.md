@@ -118,12 +118,19 @@ Close the seven high-severity findings from the architecture audit (docs/plans/a
   `UnixNano()` to match the `INTEGER` schema and the rest of the store. No schema change or
   migration (no committed DB files; tests use ephemeral databases). The watermark column remains
   RFC3339Nano by design (TEXT, v4 migration) and is out of scope.
+- M4 (Result backoff) — ✅ Documented. The adapter returns immediately on retryable HTTP errors
+  (429/5xx) and defers to the worker's backoff (D14, §7). This behaviour was already documented in
+  the code comment on `harness/remote.go` `Result`; the contract gap was that `remote-contract.md
+  §5` implied internal backoff. Added an explicit note to §5 clarifying that the adapter does not
+  back off internally on retryable errors.
+- M7 (contract gap) — ✅ Documented. Added an MVP limitation note to `remote-contract.md §5`
+  stating the adapter ignores `last_activity_at`/`next_log_offset`/`logs`. Progress streaming
+  remains the named v2 path.
 - M9 (OutcomePreempted leak) — ✅ Pinned. `OutcomePreempted` is internal state; the wire contract
   maps it to `"cancelled"`. Added `TestOutcomePreemptedWireMapping` so the mapping cannot drift
   silently.
 
 **Still open:**
-- M4 (Result backoff) — document the behavior instead of changing it.
 - M5–M8 — clean up after high-severity fixes land (M4–M8 already fixed in PR #35).
 
 ## Definition of Done
