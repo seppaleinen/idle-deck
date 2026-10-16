@@ -557,6 +557,81 @@ func TestPollerSweepDedupeCollapse(t *testing.T) {
 	}
 }
 
+// TestListIssuesWithLabel exercises ListIssuesWithLabel (issue #36, D38/D45)
+// against the existing stub server. It seeds issues with and without
+// idle-needs-human plus a PR entry, asserts only labelled non-PR issues come
+// back sorted by repo then number, and asserts the empty case returns a
+// non-nil empty slice.
+func TestListIssuesWithLabel(t *testing.T) {
+	repo := "acme/widgets"
+	tState := stubs.NewTrackerState(repo)
+	tServer := stubs.NewTrackerServer(tState)
+	defer tServer.Close()
+
+	// Seed: two labelled issues, one unlabelled issue, one PR carrying the label.
+	tState.UpsertIssue(&stubs.GitHubIssue{
+		Number: 100,
+		Title:  "Needs human: slow query",
+		User:   stubs.GitHubUser{Type: "User"},
+		Labels: []stubs.GitHubLabel{stubs.LabelIdleNeedsHuman},
+	})
+	tState.UpsertIssue(&stubs.GitHubIssue{
+		Number: 101,
+		Title:  "Needs human: flaky test",
+		User:   stubs.GitHubUser{Type: "User"},
+		Labels: []stubs.GitHubLabel{stubs.LabelIdleNeedsHuman},
+	})
+	tState.UpsertIssue(&stubs.GitHubIssue{
+		Number: 102,
+		Title:  "Unlabelled issue",
+		User:   stubs.GitHubUser{Type: "User"},
+	})
+	tState.UpsertIssue(&stubs.GitHubIssue{
+		Number: 103,
+		Title:  "A pull request",
+		User:   stubs.GitHubUser{Type: "User"},
+		Labels: []stubs.GitHubLabel{stubs.LabelIdleNeedsHuman},
+		PullRequest: &struct{}{},
+	})
+
+	gh := NewGitHub(tServer.URL(), "stub-token", []string{repo}, store.NewSQLiteWatermarks(nil))
+
+	got, err := gh.ListIssuesWithLabel(context.Background(), LabelNeedsHuman)
+	if err != nil {
+		t.Fatalf("ListIssuesWithLabel: %v", err)
+	}
+	if got == nil {
+		t.Fatal("ListIssuesWithLabel returned nil slice, want []")
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 issues, got %d: %+v", len(got), got)
+	}
+	if got[0].Number != 100 || got[1].Number != 101 {
+		t.Errorf("expected [100, 101] sorted by number, got [%d, %d]", got[0].Number, got[1].Number)
+	}
+	if got[0].Repo != repo || got[1].Repo != repo {
+		t.Errorf("expected repo %q, got %q/%q", repo, got[0].Repo, got[1].Repo)
+	}
+	if got[0].URL != "https://github.com/acme/widgets/issues/100" {
+		t.Errorf("expected URL https://github.com/acme/widgets/issues/100, got %q", got[0].URL)
+	}
+	if got[0].Title != "Needs human: slow query" {
+		t.Errorf("expected title %q, got %q", "Needs human: slow query", got[0].Title)
+	}
+
+	// Empty case: a label that matches nothing returns a non-nil empty slice.
+	empty, err := gh.ListIssuesWithLabel(context.Background(), "idle-hotfix")
+	if err != nil {
+		t.Fatalf("ListIssuesWithLabel (empty): %v", err)
+	}
+	if empty == nil {
+		t.Fatal("ListIssuesWithLabel (empty) returned nil slice, want []")
+	}
+	if len(empty) != 0 {
+		t.Errorf("expected 0 issues, got %d", len(empty))
+	}
+}
+
 // TestExtractRepo pins the host-agnostic extraction (M1 fix).
 // github.com, GHE, http, https, with/without port, with/without scheme —
 // all return the same owner/repo because the host carries no trust decision

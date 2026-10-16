@@ -19,7 +19,7 @@ func dsn(path string) string {
 	return path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode=WAL"
 }
 
-const SchemaVersion = 9
+const SchemaVersion = 10
 
 const v1Schema = `
 CREATE TABLE IF NOT EXISTS repositories (
@@ -134,6 +134,17 @@ const v8AddWatermarkETag = `
 ALTER TABLE tracker_watermarks ADD COLUMN etag TEXT;
 `
 
+// v10AddDashboardVisits persists the user's "last seen" marker for the
+// review-inbox (issue #36). The marker is server-side: one row, survives
+// browser clears, identical across devices. last_seen is Unix nanoseconds;
+// row id=1 is the single marker; 0 = never seen.
+const v10AddDashboardVisits = `
+CREATE TABLE IF NOT EXISTS dashboard_visits (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    last_seen INTEGER NOT NULL DEFAULT 0
+);
+`
+
 // v9AddUniqueDedupeKey enforces the idempotency invariant: Enqueue is
 // idempotent per dedupe_key, so two tasks with the same key must not coexist.
 // SQLite cannot ALTER TABLE ADD CONSTRAINT, so the tasks table is rebuilt:
@@ -203,6 +214,7 @@ var migrations = []migration{
 	{version: 7, sql: v7AddDashboardActions},
 	{version: 8, sql: v8AddWatermarkETag},
 	{version: 9, sql: v9AddUniqueDedupeKey},
+	{version: 10, sql: v10AddDashboardVisits},
 }
 
 // CurrentVersion returns the schema version recorded in the database.

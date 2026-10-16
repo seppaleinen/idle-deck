@@ -11,16 +11,26 @@ import (
 
 	"github.com/seppaleinen/idle-deck/config"
 	"github.com/seppaleinen/idle-deck/store"
+	"github.com/seppaleinen/idle-deck/tracker"
 )
+
+// TrackerIssueLister is the read surface the dashboard needs from the tracker
+// for the review-inbox questions section (#36, D29/D43/D45). *tracker.GitHub
+// satisfies it structurally; nil disables the questions section.
+type TrackerIssueLister interface {
+	ListIssuesWithLabel(ctx context.Context, label string) ([]tracker.IssueSummary, error)
+}
 
 type Server struct {
 	db      *sql.DB
 	cfg     config.Config
+	visits  store.DashboardVisitStore
+	trk     TrackerIssueLister
 	mux     *http.ServeMux
 	stopped chan struct{}
 }
 
-func NewServer(cfg config.Config) (*Server, error) {
+func NewServer(cfg config.Config, db *sql.DB, trk TrackerIssueLister) (*Server, error) {
 	if cfg.DB == "" {
 		return nil, fmt.Errorf("dashboard: DB path is empty")
 	}
@@ -30,31 +40,29 @@ func NewServer(cfg config.Config) (*Server, error) {
 	} else if err != nil {
 		return nil, fmt.Errorf("dashboard: stat DB: %w", err)
 	}
-	db, err := sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(5000)&_pragma=journal_mode=WAL&_mode=ro")
-	if err != nil {
-		return nil, fmt.Errorf("dashboard: open DB: %w", err)
-	}
 	v, err := store.CurrentVersion(context.Background(), db)
 	if err != nil {
-		db.Close()
 		return nil, fmt.Errorf("dashboard: schema version: %w", err)
 	}
 	if v < store.SchemaVersion {
-		db.Close()
 		return nil, fmt.Errorf("dashboard: schema stale (have %d, want %d)", v, store.SchemaVersion)
 	}
 	s := &Server{
-		db:      db,
-		cfg:     cfg,
-		mux:     http.NewServeMux(),
+		db:     db,
+		cfg:    cfg,
+		visits: store.NewSQLiteDashboardVisits(db),
+		trk:    trk,
+		mux:    http.NewServeMux(),
 		stopped: make(chan struct{}),
 	}
 	s.routes()
 	return s, nil
 }
 
+// Close is a no-op: the *sql.DB is owned by the caller (NewServer no longer
+// opens it — see #36). Retained for API stability; callers may omit it.
 func (s *Server) Close() error {
-	return s.db.Close()
+	return nil
 }
 
 func (s *Server) routes() {
@@ -70,6 +78,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/actions/poll", s.handleActionPoll)
 	s.mux.HandleFunc("/api/actions/cancel", s.handleActionCancel)
 	s.mux.HandleFunc("/api/actions/retry", s.handleActionRetry)
+
+	s.mux.HandleFunc("/api/summary", s.handleSummary)
+	s.mux.HandleFunc("/api/summary/seen", s.handleSummarySeen)
+	s.mux.HandleFunc("/summary", s.handleSummaryPage)
 
 	s.mux.Handle("/static/", NewStaticHandler("/static/"))
 	s.mux.HandleFunc("/", s.handleIndex)
@@ -121,6 +133,18 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	// Summary is the first thing the user sees (issue #36 intent).
+	http.Redirect(w, r, "/summary", http.StatusFound)
+}
+
+// handleSummaryPage serves the review-inbox summary page. It mirrors
+// handleIndex's file serving exactly: text/html, charset utf-8, via
+// http.ServeFileFS against the embedded static filesystem.
+func (s *Server) handleSummaryPage(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/summary" {
+		http.NotFound(w, r)
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	http.ServeFileFS(w, r, staticFS, "static/index.html")
+	http.ServeFileFS(w, r, staticFS, "static/summary.html")
 }

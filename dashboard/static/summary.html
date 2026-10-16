@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>idle-deck · review</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1>idle-deck <span class="muted">review</span></h1>
+  <div class="header-meta" id="header-meta">loading…</div>
+</header>
+
+<main>
+  <section class="card" id="summary-card">
+    <div class="summary-header">
+      <span>Last seen: <span id="last-seen">never</span></span>
+      <button id="mark-seen" class="btn">Mark as read</button>
+    </div>
+  </section>
+
+  <section class="card" id="suggested-card">
+    <h2>Suggested next</h2>
+    <div id="suggested">
+      <em>nothing queued — idle-deck has no next move</em>
+    </div>
+  </section>
+
+  <section class="card" id="concluded-card">
+    <h2>Concluded <span class="muted" id="concluded-count">(0)</span></h2>
+    <table id="concluded">
+      <thead><tr><th>Task</th><th>Tier</th><th>Outcome</th><th>Finished</th><th>Ticket</th><th>PR</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section class="card" id="awaiting-card">
+    <h2>Awaiting <span class="muted" id="awaiting-count">(0)</span></h2>
+    <table id="awaiting">
+      <thead><tr><th>Task</th><th>Tier</th><th>Reason</th><th>Finished</th><th>Retries</th><th>Ticket</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section class="card" id="questions-card">
+    <h2>Questions <span class="muted" id="questions-count">(0)</span></h2>
+    <table id="questions">
+      <thead><tr><th>Repo</th><th>#</th><th>Title</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+</main>
+
+<footer>
+  <span id="updated">—</span>
+</footer>
+
+<script src="/static/summary.js"></script>
+</body>
+</html>

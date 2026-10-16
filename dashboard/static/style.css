@@ -106,3 +106,10 @@ footer {
 .tier-P3 { color: var(--muted); }
 
 .stale { color: var(--err); }
+
+/* review-inbox (#36) */
+.summary-header { display:flex; align-items:center; gap:24px; flex-wrap:wrap; }
+.btn { background: var(--accent); color:#fff; border:none; border-radius:6px; padding:6px 16px; font-size:13px; font-weight:600; cursor:pointer; }
+.btn:hover { opacity:.9; }
+.btn:disabled { opacity:.5; cursor:default; }
+.empty { color: var(--muted); font-style: italic; text-align:center; padding:12px; }

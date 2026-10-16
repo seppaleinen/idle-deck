@@ -177,6 +177,8 @@ override one value for one run without editing anything.
 | `IDLE_DECK_SWEEP_REPOS` | *unset* = every allowlisted repo | D43; a narrowing subset, never a second allowlist |
 | `IDLE_DECK_SWEEP_PROMPT` | the stale-TODO/FIXME default below | D43 |
 | `IDLE_DECK_YIELD_WHEN_BUSY` | `false` | D49: when on, a `busy: true` /health answer makes the probe report not-idle |
+| `IDLE_DECK_DASHBOARD_ADDR` | `127.0.0.1:8090` | the `serve` command's listen address (§11) |
+| `IDLE_DECK_DASHBOARD_ACTIONS` | `false` | enables `/api/actions/*` (poll, cancel, retry) on the dashboard |
 
 `IDLE_DECK_SWEEP_PERIOD` is the **bucket period**, and it is operator-owned rather than a built-in
 schedule. `0` is the global kill switch. There is no adaptive backoff: a sweep that finds nothing
@@ -223,7 +225,7 @@ than the wrapper naming one by default (D6/D40).
 | `IDLE_DECK_REMOTE_AGENT_ENV` | *unset* | JSON array of extra env strings (e.g. `["FOO=bar","BAZ=qux"]`) layered on top of the inherited environment. Use this to pass provider credentials the agent needs without writing env files (D36). |
 
 A2A-platform adapters are a different animal: they are a second `Harness`
-adapter (**D41** trigger 3), not a config swap. See §11 and
+adapter (**D41** trigger 3), not a config swap. See §9 and
 `docs/architecture/remote-contract.md`.
 
 ## 5. CLI surface
@@ -233,6 +235,7 @@ adapter (**D41** trigger 3), not a config swap. See §11 and
 | `idle-deck run` | Run the daemon in the foreground. The only mode. |
 | `idle-deck status` | Read local state and report what the daemon is doing. No daemon required to read, only to be interesting. |
 | `idle-deck check` | Validate configuration and connectivity without starting anything. |
+| `idle-deck serve` | Run the read-only dashboard — the review inbox (§11). Opens the database read-write so the v10 migration can run, then serves on `IDLE_DECK_DASHBOARD_ADDR` (default `127.0.0.1:8090`). |
 | `idle-deck --version` | Version. |
 
 **Deliberately absent**, each rejected for a stated reason rather than by omission:
@@ -415,7 +418,7 @@ polling, abort, the outcome→`AttemptOutcome` mapping) against a server it cont
 is evidence that the adapter is correct; it is **not** evidence that a second, structurally different
 implementation would fit the `Harness` interface, which is what
 [#12](https://github.com/seppaleinen/idle-deck/issues/12) was about. That gap is closed by the
-**conformance suite** (D41), not by a second stub — see §11.
+**conformance suite** (D41), not by a second stub — see §9.
 
 And the `since`-composes-with-`labels` assumption #9 flagged can be exercised against a stub —
 though what that verifies is the *adapter's* handling of the behaviour, not GitHub's, which is why
@@ -437,7 +440,84 @@ The repository had **no `.github` directory at all** when this was decided, so t
 covers the MVP. Pinning it from day one is a reasonable thing to want and an unreasonable thing to
 adopt before there is code to lint.
 
-## 11. What this document deliberately does not decide
+## 11. Review inbox (#36)
+
+**The dashboard's default landing page answers one question: what happened since I last looked?** The
+review inbox is the first thing the user sees after idle-deck has been running — what concluded, what
+is waiting on a human, what the sweeps found, and what would start next. It is a read surface: it
+never touches work state, and it adds one marker row of its own (schema v10).
+
+### The marker row — `dashboard_visits`, schema v10
+
+| Property | Value |
+|---|---|
+| Table | `dashboard_visits` |
+| Row | exactly one — `id INTEGER PRIMARY KEY CHECK (id = 1)` |
+| `last_seen` | Unix **nanoseconds**; `0` (the default) = never seen |
+| Access | `DashboardVisitStore` interface (`store/visits.go`), SQLite implementation |
+| Migration | v10, forward-only, automatic at startup (§5's "no `migrate`") |
+
+The marker is **server-side, not in the browser**: it survives browser clears and is identical across
+devices, so a fresh review every morning is guaranteed regardless of which machine the user sits at
+(§11's marker row).
+
+### Routing
+
+| Route | What it is |
+|---|---|
+| `/` | 302 → `/summary` — the review inbox is now the landing page |
+| `/summary` | The review page (embedded `static/summary.html`, polls `/api/summary` every 15s) |
+| `/api/summary` | `GET` only — the digest JSON |
+| `/api/summary/seen` | `POST` only — bumps the marker |
+
+The status dashboard is unchanged: `/api/status` and the `/static/` assets still serve as before.
+
+### `GET /api/summary` — the digest
+
+`generated_at` (RFC 3339) plus `last_seen`, which is **absent from the response when never seen** —
+the page renders "never" and the button reads "Mark all as read". Empty sections are `[]`, never
+`null`. Four sections:
+
+| Section | Contents |
+|---|---|
+| `concluded` | Tasks in a terminal state (`succeeded`, `escalated`) whose **latest attempt** finished after `last_seen` — every such task when never seen — newest first. Each carries `outcome`, `finished_at`, `ticket_url`, and `pr_url` when the attempt produced a `pull_request` artifact. |
+| `awaiting` | **Every** escalated task, regardless of when it finished. `reason` is the latest attempt's outcome; `retry_count` is the total attempts consumed (D14). |
+| `questions` | Open `idle-needs-human` issues (D29) from the tracker — the sweep's findings (D43) and escalated tasks' diagnostics (D45) are exactly what carries this label. |
+| `suggested_next` | The highest-tier queued task (P0 < P1 < P2 < P3, FIFO within a tier), or the oldest running task if nothing is queued. **Omitted entirely** when there is nothing actionable — the page then says "nothing queued". |
+
+Per D48 the user is the one who merges Draft PRs, so the summary shows the PR URL and stops: PR
+state is deliberately not queried (§11's follow-up list).
+
+### `POST /api/summary/seen`
+
+Bumps `last_seen` to now and returns `{"seen_at": "..."}` (RFC 3339). An idempotent upsert — last
+writer wins; there is no history, and there is no "mark all as read" variant because never-seen
+already means *all* of it is included. This is the **only write** the review inbox performs.
+
+### Tracker access and write-surface
+
+The `questions` section reuses the tracker seam (D38): the dashboard lists `idle-needs-human`
+through the same `*tracker.GitHub` the poller uses — `ListIssuesWithLabel` walks every allowlisted
+repository (D30), skips pull requests, and sorts by repo then number. `serve` constructs that tracker
+from `IDLE_DECK_GITHUB_TOKEN` / `IDLE_DECK_REPOS` / `IDLE_DECK_GITHUB_API`; **when those are unset,
+the tracker is nil and `questions` comes back empty — no 500** — so `serve` still works against the
+database alone. (`serve` opens the database read-write through `store.Open` so the v10 migration can
+run; `NewServer` itself checks the recorded version and refuses a stale schema rather than migrate.)
+
+**Read-only, with one exception.** The dashboard surface writes nothing to `tasks`, `attempts`, or
+any other work-state table. The single new write is the `dashboard_visits` marker row.
+
+### Deliberately absent / follow-up
+
+- **No merged-vs-open PR distinction.** The PR URL is shown and the user sees the PR's state from
+  there (D48: the pipeline lead merges on explicit user instruction; the dashboard does not chase PR
+  state). Flagged as a follow-up.
+- **No unread count or per-item read state.** One marker row is the whole memory of the inbox; a
+  "since last review" digest is the stated intent, not a notifications system.
+- **No cross-device or per-browser `last_seen`.** Server-side is a deliberate property (§11's
+  marker row), not an omission.
+
+## 12. What this document deliberately does not decide
 
 - **A global spend ceiling** — impossible until the remote reports usage (§8).
 - **Release binaries, Homebrew, container images** — deferred until there is a second user (§2).
@@ -454,7 +534,7 @@ adopt before there is code to lint.
   concerns, specified in [`docs/architecture/remote-contract.md`](../architecture/remote-contract.md)
   and decided by [ADR 0018](../adr/0018-framework-agnostic-means-never-naming-a-vendor.md).
 
-## 12. Cross-references
+## 13. Cross-references
 
 - Domain model: [`docs/ontology.md`](../ontology.md) — entities, I1, I7, I9, I10, I11
 - Interface seams: [`docs/architecture/boundaries.md`](../architecture/boundaries.md) — the four interfaces
@@ -462,4 +542,5 @@ adopt before there is code to lint.
 - Remote execution service: [`docs/architecture/remote-contract.md`](../architecture/remote-contract.md) — `/health`, `budget`, timeouts
 - This decision: [ADR 0016](../adr/0016-idle-probed-at-the-harness.md), [ADR 0017](../adr/0017-the-artifact.md) — D31–D39
 - Harness seam: [ADR 0018](../adr/0018-framework-agnostic-means-never-naming-a-vendor.md) — D40, D41
-- Map: [#3](https://github.com/seppaleinen/idle-deck/issues/3) · Backlog: [#10](https://github.com/seppaleinen/idle-deck/issues/10)
+- Review inbox: [§11](#11-review-inbox-36) — the marker row (v10), `GET /api/summary`, `POST /api/summary/seen`, routing
+- Map: [#3](https://github.com/seppaleinen/idle-deck/issues/3) · Backlog: [#10](https://github.com/seppaleinen/idle-deck/issues/10) · Review inbox: [#36](https://github.com/seppaleinen/idle-deck/issues/36)

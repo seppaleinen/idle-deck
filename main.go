@@ -500,7 +500,29 @@ func runServe(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	srv, err := dashboard.NewServer(cfg)
+	ctx := context.Background()
+	dbPath := config.ExpandHome(cfg.DB)
+	db, err := store.Open(ctx, dbPath) // read-write; runs forward migrations (v10)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	defer db.Close()
+
+	// Tracker for the questions section (nil when not configured, so serve
+	// still works with DB alone).
+	var trk dashboard.TrackerIssueLister
+	if cfg.GitHubToken != "" && cfg.Repos != "" {
+		repos, err := config.ParseRepos(cfg.Repos)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "parse repos: "+err.Error())
+			return 1
+		}
+		wm := store.NewSQLiteWatermarks(db)
+		trk = tracker.NewGitHub(cfg.GitHubAPI, cfg.GitHubToken, repos, wm)
+	}
+
+	srv, err := dashboard.NewServer(cfg, db, trk)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -212,6 +213,90 @@ func (g *GitHub) SetLabels(ctx context.Context, ref queue.TrackerRef, add, remov
 // findings (ADR 0020, D43).
 func (g *GitHub) OpenIssue(ctx context.Context, repo string, title, body string, labels []string) error {
 	return g.postIssue(ctx, repo, title, body, labels)
+}
+
+// IssueSummary is a lightweight issue summary for dashboard display (#36).
+type IssueSummary struct {
+	Repo   string `json:"repo"`
+	Number int    `json:"number"`
+	Title  string `json:"title"`
+	URL    string `json:"url"`
+}
+
+// ListIssuesWithLabel returns all OPEN issues carrying the given label,
+// across every allowlisted repository (D30). The dashboard review-inbox
+// uses this for its questions section with LabelNeedsHuman (D29, D43, D45).
+// Results are sorted by repo, then issue number, for deterministic output.
+func (g *GitHub) ListIssuesWithLabel(ctx context.Context, label string) ([]IssueSummary, error) {
+	var out []IssueSummary
+	for repo := range g.allowlist {
+		issues, err := g.listIssuesForRepo(ctx, repo, label)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, issues...)
+	}
+	if out == nil {
+		out = []IssueSummary{}
+	}
+	sortIssuesByRepoThenNumber(out)
+	return out, nil
+}
+
+// listIssuesForRepo performs one GET against the issues endpoint of a single
+// allowlisted repo, filtered by the given label. It skips pull requests (the
+// issues endpoint returns PRs; keep only real issues) and returns a non-nil
+// slice on success. Any HTTP status >= 400 fails fast with a descriptive
+// error (the dashboard surfaces a 500 — simplest correct behaviour).
+func (g *GitHub) listIssuesForRepo(ctx context.Context, repo, label string) ([]IssueSummary, error) {
+	endpoint := fmt.Sprintf("%s/repos/%s/issues?state=open&labels=%s&per_page=100",
+		g.apiURL, repo, url.QueryEscape(label))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+g.token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	resp, err := g.httpClient().Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("tracker: list issues %s: %w", repo, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("tracker: list issues %s: status %d: %s", repo, resp.StatusCode, string(b))
+	}
+	var issues []githubIssue
+	if err := json.NewDecoder(resp.Body).Decode(&issues); err != nil {
+		return nil, fmt.Errorf("tracker: list issues %s: decode: %w", repo, err)
+	}
+	var out []IssueSummary
+	for _, iss := range issues {
+		if iss.PullRequest != nil {
+			continue
+		}
+		out = append(out, IssueSummary{
+			Repo:   repo,
+			Number: iss.Number,
+			Title:  iss.Title,
+			URL:    iss.HTMLURL,
+		})
+	}
+	if out == nil {
+		out = []IssueSummary{}
+	}
+	return out, nil
+}
+
+// sortIssuesByRepoThenNumber sorts in place by Repo, then Number, for
+// deterministic dashboard output.
+func sortIssuesByRepoThenNumber(issues []IssueSummary) {
+	sort.Slice(issues, func(i, j int) bool {
+		if issues[i].Repo != issues[j].Repo {
+			return issues[i].Repo < issues[j].Repo
+		}
+		return issues[i].Number < issues[j].Number
+	})
 }
 
 // ValidateRead performs one authenticated read against the tracker

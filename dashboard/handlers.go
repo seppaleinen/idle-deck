@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/seppaleinen/idle-deck/config"
 	"github.com/seppaleinen/idle-deck/queue"
+	"github.com/seppaleinen/idle-deck/tracker"
 )
 
 type statusResponse struct {
@@ -610,6 +612,272 @@ func (s *Server) handleActionCancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.respondJSON(w, r, http.StatusOK, map[string]string{"action_id": actionID})
+}
+
+// Summary response types (#36, issue #36 review-inbox). The dashboard
+// surface stays read-only w.r.t. work state: no writes to tasks or attempts.
+type SummaryResponse struct {
+	GeneratedAt   time.Time              `json:"generated_at"`
+	LastSeen      *time.Time             `json:"last_seen,omitempty"`
+	Concluded     []ConcludedItem        `json:"concluded"`
+	Awaiting      []AwaitingItem         `json:"awaiting"`
+	Questions     []tracker.IssueSummary `json:"questions"`
+	SuggestedNext *SuggestedNextItem     `json:"suggested_next,omitempty"`
+}
+
+type ConcludedItem struct {
+	TaskID     string    `json:"task_id"`
+	Tier       string    `json:"tier"`
+	Outcome    string    `json:"outcome"`
+	FinishedAt time.Time `json:"finished_at"`
+	TicketURL  string    `json:"ticket_url"`
+	PRURL      string    `json:"pr_url,omitempty"`
+}
+
+type AwaitingItem struct {
+	TaskID     string    `json:"task_id"`
+	Tier       string    `json:"tier"`
+	State      string    `json:"state"`
+	Reason     string    `json:"reason"`
+	FinishedAt time.Time `json:"finished_at"`
+	TicketURL  string    `json:"ticket_url"`
+	RetryCount int       `json:"retry_count"`
+}
+
+type SuggestedNextItem struct {
+	TaskID    string    `json:"task_id"`
+	Tier      string    `json:"tier"`
+	State     string    `json:"state"`
+	TicketURL string    `json:"ticket_url"`
+	Prompt    string    `json:"prompt"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type SeenResponse struct {
+	SeenAt time.Time `json:"seen_at"`
+}
+
+// handleSummary builds the review-inbox summary (issue #36). GET only.
+//
+// The summary shows what concluded since the user last marked the inbox read,
+// what is awaiting a human, and the sweep's open questions (D43/D45,
+// idle-needs-human issues). Per D48 the dashboard opens Draft PRs and the
+// user merges — the summary shows PR URLs but does not query PR state.
+func (s *Server) handleSummary(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.respondError(w, r, http.StatusMethodNotAllowed, "GET only")
+		return
+	}
+	ctx := r.Context()
+
+	lastSeen, err := s.visits.GetLastSeen(ctx)
+	if err != nil {
+		s.respondError(w, r, http.StatusInternalServerError, "last seen: "+err.Error())
+		return
+	}
+	seen := !lastSeen.IsZero()
+	var lastSeenPtr *time.Time
+	if seen {
+		// Heap-allocate: the pointer outlives this frame (it is encoded into
+		// the JSON response and read after the slice normalisation below).
+		ls := lastSeen
+		lastSeenPtr = &ls
+	}
+
+	// concluded: tasks that reached a terminal state and finished after
+	// last_seen (all, when never seen).
+	concluded, err := s.queryConcluded(ctx, seen, lastSeen)
+	if err != nil {
+		s.respondError(w, r, http.StatusInternalServerError, "query concluded: "+err.Error())
+		return
+	}
+	if concluded == nil {
+		concluded = []ConcludedItem{}
+	}
+
+	awaiting, err := s.queryAwaiting(ctx)
+	if err != nil {
+		s.respondError(w, r, http.StatusInternalServerError, "query awaiting: "+err.Error())
+		return
+	}
+	if awaiting == nil {
+		awaiting = []AwaitingItem{}
+	}
+
+	// questions: idle-needs-human issues (D43, D45) from the tracker.
+	var questions []tracker.IssueSummary
+	if s.trk != nil {
+		questions, err = s.trk.ListIssuesWithLabel(ctx, tracker.LabelNeedsHuman)
+		if err != nil {
+			s.respondError(w, r, http.StatusInternalServerError, "list needs-human issues: "+err.Error())
+			return
+		}
+	}
+	if questions == nil {
+		questions = []tracker.IssueSummary{}
+	}
+
+	suggested, err := s.querySuggestedNext(ctx)
+	if err != nil {
+		s.respondError(w, r, http.StatusInternalServerError, "query suggested next: "+err.Error())
+		return
+	}
+
+	out := SummaryResponse{
+		GeneratedAt:   time.Now(),
+		LastSeen:      lastSeenPtr,
+		Concluded:     concluded,
+		Awaiting:      awaiting,
+		Questions:     questions,
+		SuggestedNext: suggested,
+	}
+	s.respondJSON(w, r, http.StatusOK, out)
+}
+
+// queryConcluded returns tasks that reached a terminal state
+// (succeeded, escalated) and whose latest attempt finished after lastSeen
+// (all, when seen is false). finished_at is Unix nanoseconds. A PR artifact
+// on the attempt surfaces as pr_url; otherwise it is omitted.
+func (s *Server) queryConcluded(ctx context.Context, seen bool, lastSeen time.Time) ([]ConcludedItem, error) {
+	const baseQuery = `
+	SELECT t.id, t.tier, a.outcome, a.finished_at, t.ticket_url, art.uri
+	FROM tasks t
+	JOIN attempts a ON a.task_id = t.id AND a.ordinal = (
+		SELECT MAX(ordinal) FROM attempts WHERE task_id = t.id
+	)
+	LEFT JOIN artifacts art ON art.attempt_id = a.id AND art.kind = 'pull_request'
+	WHERE a.outcome != '' AND a.finished_at IS NOT NULL
+	  AND t.state IN ('succeeded', 'escalated')`
+	args := []interface{}{}
+	q := baseQuery
+	if seen {
+		q += ` AND a.finished_at > ?`
+		args = append(args, lastSeen.UnixNano())
+	}
+	q += ` ORDER BY a.finished_at DESC`
+	rows, err := s.dbQuery(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ConcludedItem
+	for rows.Next() {
+		var c ConcludedItem
+		var outcome, ticketURL, prURL sql.NullString
+		var finishedAt int64
+		if err := rows.Scan(&c.TaskID, &c.Tier, &outcome, &finishedAt, &ticketURL, &prURL); err != nil {
+			return nil, err
+		}
+		c.Outcome = outcome.String
+		c.FinishedAt = time.Unix(0, finishedAt)
+		c.TicketURL = ticketURL.String
+		c.PRURL = prURL.String
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// queryAwaiting returns every escalated task, newest last-finish first,
+// with reason = latest attempt outcome and retry_count = total attempts.
+func (s *Server) queryAwaiting(ctx context.Context) ([]AwaitingItem, error) {
+	rows, err := s.dbQuery(ctx, `
+		SELECT t.id, t.tier, a.outcome, a.finished_at, t.ticket_url,
+		       (SELECT COUNT(*) FROM attempts WHERE task_id = t.id)
+		FROM tasks t
+		JOIN attempts a ON a.task_id = t.id AND a.ordinal = (
+			SELECT MAX(ordinal) FROM attempts WHERE task_id = t.id
+		)
+		WHERE t.state = 'escalated'
+		ORDER BY a.finished_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []AwaitingItem
+	for rows.Next() {
+		var a AwaitingItem
+		var outcome, ticketURL sql.NullString
+		var finishedAt int64
+		if err := rows.Scan(&a.TaskID, &a.Tier, &outcome, &finishedAt, &ticketURL, &a.RetryCount); err != nil {
+			return nil, err
+		}
+		a.State = string(queue.StateEscalated)
+		a.Reason = outcome.String
+		a.FinishedAt = time.Unix(0, finishedAt)
+		a.TicketURL = ticketURL.String
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// querySuggestedNext returns the next candidate to start: the highest-tier
+// queued task (tier order, FIFO within tier), or — if the queue is empty —
+// the oldest running task. nil if there is nothing to suggest.
+func (s *Server) querySuggestedNext(ctx context.Context) (*SuggestedNextItem, error) {
+	const ranked = `CASE tier WHEN 'P0' THEN 0 WHEN 'P1' THEN 1 WHEN 'P2' THEN 2 WHEN 'P3' THEN 3 ELSE 99 END`
+	taskID, err := s.suggestedNextTaskID(ctx,
+		fmt.Sprintf(`
+			SELECT id FROM tasks
+			WHERE state = 'queued'
+			ORDER BY %s ASC, created_at ASC, id ASC
+			LIMIT 1`, ranked),
+		`
+			SELECT id FROM tasks
+			WHERE state = 'running'
+			ORDER BY created_at ASC
+			LIMIT 1`)
+	if err != nil {
+		return nil, err
+	}
+	if taskID == "" {
+		return nil, nil
+	}
+	var item SuggestedNextItem
+	var createdAt int64
+	err = s.dbQueryRow(ctx, `
+		SELECT t.id, t.tier, t.state, t.ticket_url, t.prompt, t.created_at
+		FROM tasks t WHERE t.id = ?`, taskID).
+		Scan(&item.TaskID, &item.Tier, &item.State, &item.TicketURL, &item.Prompt, &createdAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	item.CreatedAt = time.Unix(0, createdAt)
+	return &item, nil
+}
+
+// suggestedNextTaskID returns the id selected by primaryQuery, falling back
+// to fallbackQuery, or "" when neither yields a row.
+func (s *Server) suggestedNextTaskID(ctx context.Context, primaryQuery, fallbackQuery string) (string, error) {
+	var taskID string
+	err := s.dbQueryRow(ctx, primaryQuery).Scan(&taskID)
+	if err == sql.ErrNoRows {
+		err = s.dbQueryRow(ctx, fallbackQuery).Scan(&taskID)
+		if err == sql.ErrNoRows {
+			return "", nil
+		}
+	}
+	if err != nil {
+		return "", err
+	}
+	return taskID, nil
+}
+
+// handleSummarySeen marks the review-inbox as read (issue #36). POST only.
+func (s *Server) handleSummarySeen(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.respondError(w, r, http.StatusMethodNotAllowed, "POST only")
+		return
+	}
+	ctx := r.Context()
+	now := time.Now()
+	if err := s.visits.UpdateLastSeen(ctx, now); err != nil {
+		s.respondError(w, r, http.StatusInternalServerError, "update last seen: "+err.Error())
+		return
+	}
+	s.respondJSON(w, r, http.StatusOK, SeenResponse{SeenAt: now})
 }
 
 // handleActionRetry writes a "retry" action to the dashboard_actions table.

@@ -313,4 +313,73 @@ CREATE INDEX idx_tasks_dedupe ON tasks (dedupe_key);
 	if !hasArtifacts {
 		t.Error("artifacts table not created by migration")
 	}
+
+	hasVisits := false
+	rows, _ = db2.QueryContext(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name='dashboard_visits'`)
+	if rows.Next() {
+		hasVisits = true
+	}
+	rows.Close()
+	if !hasVisits {
+		t.Error("dashboard_visits table not created by migration (v10)")
+	}
+}
+
+// TestDashboardVisitsStore exercises the review-inbox marker (issue #36):
+// GetLastSeen returns zero time before any update; UpdateLastSeen upserts
+// the single marker row and GetLastSeen reads it back.
+func TestDashboardVisitsStore(t *testing.T) {
+	ctx := context.Background()
+	dbPath := t.TempDir() + "/visits.db"
+	db, err := Open(ctx, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	v := NewSQLiteDashboardVisits(db)
+
+	// Never seen: zero time, no error.
+	t0, err := v.GetLastSeen(ctx)
+	if err != nil {
+		t.Fatalf("GetLastSeen before update: %v", err)
+	}
+	if !t0.IsZero() {
+		t.Errorf("GetLastSeen before update = %v, want zero", t0)
+	}
+
+	// UpdateLastSeen upserts.
+	now := time.Now().UTC()
+	if err := v.UpdateLastSeen(ctx, now); err != nil {
+		t.Fatalf("UpdateLastSeen: %v", err)
+	}
+	t1, err := v.GetLastSeen(ctx)
+	if err != nil {
+		t.Fatalf("GetLastSeen after update: %v", err)
+	}
+	if !t1.Equal(now) {
+		t.Errorf("GetLastSeen after update = %v, want %v", t1, now)
+	}
+
+	// UpdateLastSeen is idempotent per row (ON CONFLICT upsert).
+	later := now.Add(time.Hour)
+	if err := v.UpdateLastSeen(ctx, later); err != nil {
+		t.Fatalf("UpdateLastSeen second: %v", err)
+	}
+	t2, err := v.GetLastSeen(ctx)
+	if err != nil {
+		t.Fatalf("GetLastSeen after second update: %v", err)
+	}
+	if !t2.Equal(later) {
+		t.Errorf("GetLastSeen after second update = %v, want %v", t2, later)
+	}
+
+	// Only one marker row exists.
+	var count int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM dashboard_visits`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Errorf("expected 1 dashboard_visits row, got %d", count)
+	}
 }
