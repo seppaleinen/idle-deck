@@ -103,6 +103,7 @@ type TrackerRef struct {
 type Task struct {
 	ID             string
 	RepositoryID   string
+	RepositoryURL  string // clone URL, empty if unknown (worker leaves RepoRef.URL empty)
 	Ticket         TrackerRef
 	Tier           TaskTier
 	Prompt         string

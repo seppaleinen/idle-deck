@@ -135,6 +135,7 @@ func (p *Poller) Sweep(ctx context.Context) error {
 		task := queue.Task{
 			ID:             taskID,
 			RepositoryID:   repo,
+			RepositoryURL:  p.gh.cloneURL(repo),
 			Ticket:         queue.TrackerRef{}, // zero value for P3 (D44)
 			Tier:           queue.TierP3,
 			Prompt:         p.sweepPrompt,

@@ -19,7 +19,7 @@ func dsn(path string) string {
 	return path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode=WAL"
 }
 
-const SchemaVersion = 10
+const SchemaVersion = 11
 
 const v1Schema = `
 CREATE TABLE IF NOT EXISTS repositories (
@@ -145,6 +145,12 @@ CREATE TABLE IF NOT EXISTS dashboard_visits (
 );
 `
 
+// v11AddRepositoryURL adds repository_url to tasks for the tracker to supply
+// a clone URL to the worker (closes #27).
+const v11AddRepositoryURL = `
+ALTER TABLE tasks ADD COLUMN repository_url TEXT;
+`
+
 // v9AddUniqueDedupeKey enforces the idempotency invariant: Enqueue is
 // idempotent per dedupe_key, so two tasks with the same key must not coexist.
 // SQLite cannot ALTER TABLE ADD CONSTRAINT, so the tasks table is rebuilt:
@@ -215,6 +221,7 @@ var migrations = []migration{
 	{version: 8, sql: v8AddWatermarkETag},
 	{version: 9, sql: v9AddUniqueDedupeKey},
 	{version: 10, sql: v10AddDashboardVisits},
+	{version: 11, sql: v11AddRepositoryURL},
 }
 
 // CurrentVersion returns the schema version recorded in the database.

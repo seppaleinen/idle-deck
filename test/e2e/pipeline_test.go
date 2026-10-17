@@ -115,10 +115,14 @@ func TestPipeline_E2E(t *testing.T) {
 	sink := &stubSink{}
 	policy := &stubPolicy{}
 
-	// 6. Enqueue P1 task
+	// 6. Enqueue P1 task. RepositoryURL is the clone target the remote
+	// needs (tokenURL passes local paths through unchanged); it is what
+	// the tracker would derive from apiURL + owner/repo. RepositoryID
+	// stays the identity key.
 	task := queue.Task{
 		ID:           "e2e-task-1",
-		RepositoryID: upstreamDir,
+		RepositoryID: "local/test-repo",
+		RepositoryURL: upstreamDir,
 		Ticket: queue.TrackerRef{
 			Tracker:      "github",
 			RepositoryID: "local/test-repo",

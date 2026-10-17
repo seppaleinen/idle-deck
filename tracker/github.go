@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"sort"
@@ -80,6 +81,36 @@ func (g *GitHub) SetWatermark(repo string, t time.Time) {
 	}
 }
 
+// cloneURL maps an owner/repo string to an https:// clone URL using the
+// tracker's apiURL as the source of truth for the host.
+//   - apiURL host github.com → clone host github.com
+//   - apiURL host other (GHE) → use apiURL host directly (API and clone share host)
+//   - SSH (git@) is not supported; returns empty string
+func (g *GitHub) cloneURL(repo string) string {
+	// Handle URLs without scheme by prepending https://
+	apiURL := g.apiURL
+	if !strings.Contains(apiURL, "://") {
+		apiURL = "https://" + apiURL
+	}
+	u, err := url.Parse(apiURL)
+	if err != nil {
+		return ""
+	}
+	var host string
+	switch u.Hostname() {
+	case "api.github.com":
+		host = "github.com"
+	default:
+		// For GHE or other instances, API and clone share a host
+		host = u.Hostname()
+	}
+	// Preserve port if present
+	if u.Port() != "" {
+		host = net.JoinHostPort(host, u.Port())
+	}
+	return fmt.Sprintf("https://%s/%s.git", host, repo)
+}
+
 // Parse implements TrackerSource.Parse: turns raw GitHub issue JSON into a
 // derived, allowlist-checked queue.Task (event-contract §3, §8).
 func (g *GitHub) Parse(ctx context.Context, raw []byte) (queue.Task, error) {
@@ -142,6 +173,7 @@ func (g *GitHub) Parse(ctx context.Context, raw []byte) (queue.Task, error) {
 	task := queue.Task{
 		ID:           uuid.New().String(),
 		RepositoryID: repo,
+		RepositoryURL: g.cloneURL(repo),
 		Ticket: queue.TrackerRef{
 			Tracker:      "github",
 			RepositoryID: repo,

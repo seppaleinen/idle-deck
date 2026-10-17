@@ -339,17 +339,17 @@ func (w *Worker) buildRunRequest(task queue.Task, lease queue.Lease) harness.Run
 			// a value git can clone — a local filesystem path, or an
 			// https:// clone URL.
 			//
-			// It is set to task.RepositoryID here because that is the
-			// only repo identity the worker holds. The daemon must
-			// supply a clone-capable value there. The tracker currently
-			// stores owner/repo in task.RepositoryID, which the remote
-			// cannot clone (tokenURL rejects it: "unsupported protocol")
-			// — a known gap. The repositories table exists but is never
-			// populated; the intended fix is a registry resolving
-			// owner/repo → clone URL, surfaced by the e2e test below.
+			// It is set to task.RepositoryURL, which the tracker
+			// supplies as a clone-capable value. If empty (e.g. a
+			// hand-enqueued task or P3 sweep before this change),
+			// the worker leaves it empty and the remote's tokenURL
+			// will reject it with "unsupported protocol" — the
+			// existing failure mode. For private repos, the daemon
+			// must configure IDLE_DECK_GITHUB_TOKEN so the remote
+			// can authenticate (remote/server.go NewServer).
 			ID:      task.RepositoryID,
 			Name:    task.RepositoryID,
-			URL:     task.RepositoryID,
+			URL:     task.RepositoryURL,
 			Tracker: task.Ticket.Tracker,
 		},
 		TicketRef: harness.TicketRef{

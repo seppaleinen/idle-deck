@@ -93,8 +93,9 @@ func (q *SQLiteQueue) Enqueue(ctx context.Context, task queue.Task) error {
 	const qInsert = `
 INSERT OR IGNORE INTO tasks (id, repository_id, ticket_tracker, ticket_repo_id,
 	ticket_external_id, ticket_url, tier, prompt, payload, timeout_seconds,
-	budget, state, event_type, dedupe_key, received_at, created_at, derived_from)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)`
+	budget, state, event_type, dedupe_key, received_at, created_at, derived_from,
+	repository_url)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)`
 	_, err := q.db.ExecContext(ctx, qInsert,
 		task.ID,
 		task.RepositoryID,
@@ -112,6 +113,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)`
 		task.TriggeredBy.ReceivedAt,
 		task.CreatedAt,
 		task.DerivedFrom,
+		task.RepositoryURL,
 	)
 	if err != nil {
 		return fmt.Errorf("store: enqueue insert: %w", err)
@@ -506,18 +508,23 @@ func (q *SQLiteQueue) GetTask(ctx context.Context, taskID string) (queue.Task, e
 	var triggeredEventType, triggeredDedupeKey string
 	var triggeredReceivedAt int64
 	var derivedFrom sql.NullString
+	var repositoryURL sql.NullString
+	var eventType string
+	var dedupeKey string
+	var receivedAt int64
+	var createdAt int64
 	err := q.db.QueryRowContext(ctx, `
 SELECT id, repository_id, ticket_tracker, ticket_repo_id,
        ticket_external_id, ticket_url, tier, prompt, payload,
-       timeout_seconds, budget, state,
-       triggered_by_event_type, triggered_by_dedupe_key,
-       triggered_by_received_at, created_at, derived_from
+       timeout_seconds, budget, state, event_type, dedupe_key,
+       received_at, created_at, triggered_by_event_type, triggered_by_dedupe_key,
+       triggered_by_received_at, repository_url
   FROM tasks WHERE id = ?`, taskID).Scan(
 		&t.ID, &t.RepositoryID, &ticketTracker, &ticketRepoID,
 		&ticketExternalID, &ticketURL, &t.Tier, &t.Prompt, &t.Payload,
-		&t.TimeoutSeconds, &t.Budget, &t.State,
-		&triggeredEventType, &triggeredDedupeKey,
-		&triggeredReceivedAt, &t.CreatedAt, &derivedFrom,
+		&t.TimeoutSeconds, &t.Budget, &t.State, &eventType, &dedupeKey,
+		&receivedAt, &createdAt, &triggeredEventType, &triggeredDedupeKey,
+		&triggeredReceivedAt, &repositoryURL,
 	)
 	if err == sql.ErrNoRows {
 		return queue.Task{}, queue.ErrNotFound
@@ -538,6 +545,9 @@ SELECT id, repository_id, ticket_tracker, ticket_repo_id,
 	}
 	if derivedFrom.Valid {
 		t.DerivedFrom = derivedFrom.String
+	}
+	if repositoryURL.Valid {
+		t.RepositoryURL = repositoryURL.String
 	}
 	return t, nil
 }

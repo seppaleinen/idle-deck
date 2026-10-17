@@ -632,6 +632,41 @@ func TestListIssuesWithLabel(t *testing.T) {
 	}
 }
 
+// TestCloneURL tests the cloneURL method for various hosts and protocols.
+func TestCloneURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		apiURL  string
+		repo    string
+		want    string
+		wantErr bool
+	}{
+		{"GitHub.com HTTPS", "https://api.github.com", "owner/repo", "https://github.com/owner/repo.git", false},
+		{"GitHub.com HTTP", "http://api.github.com", "owner/repo", "https://github.com/owner/repo.git", false},
+		{"GHE HTTPS", "https://ghe.example.com", "owner/repo", "https://ghe.example.com/owner/repo.git", false},
+		{"GHE HTTP", "http://ghe.example.com", "owner/repo", "https://ghe.example.com/owner/repo.git", false},
+		{"GHE with port", "https://ghe.example.com:8443", "owner/repo", "https://ghe.example.com:8443/owner/repo.git", false},
+		{"GitHub.com no scheme", "api.github.com", "owner/repo", "https://github.com/owner/repo.git", false},
+		{"GHE no scheme", "ghe.example.com", "owner/repo", "https://ghe.example.com/owner/repo.git", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gh := NewGitHub(tt.apiURL, "token", []string{tt.repo}, store.NewSQLiteWatermarks(nil))
+			got := gh.cloneURL(tt.repo)
+			if tt.wantErr {
+				if got != "" {
+					t.Errorf("cloneURL(%q) = %q, want empty (error)", tt.repo, got)
+				}
+				return
+			}
+			if got != tt.want {
+				t.Errorf("cloneURL(%q) = %q, want %q", tt.repo, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestExtractRepo pins the host-agnostic extraction (M1 fix).
 // github.com, GHE, http, https, with/without port, with/without scheme —
 // all return the same owner/repo because the host carries no trust decision
