@@ -102,7 +102,7 @@ a99a196 2026-10-05 issue #20: Harness adapter (wire contract, outcome mapping, c
 
 | # | Criteria | Status | Notes |
 |---|---|---|---|
-| 1 | Wrapper speaks all four endpoints and passes C1–C9 against a real opencode run | ⚠️ Partial | C1–C4 pass server-level. C5–C9 pass black-box adapter-level against stubs. Real opencode smoke test exists but is gated (`IDLE_DECK_REAL_ACP_TESTS=1`) and requires credentials — not run in CI. |
+| 1 | Wrapper speaks all four endpoints and passes C1–C9 against a real opencode run | ⚠️ Partial | C1–C4 pass server-level. C5–C9 pass black-box adapter-level against stubs. Real opencode smoke test exists but is gated (`IDLE_DECK_REAL_ACP_TESTS=1`) and requires credentials — not run in CI. **Investigated 2026-10-17:** the gated test runs but returns empty outcome. Diagnosed as **provider-side**, not a code defect: the default model `litellm/big-pickle` returns *"OpenCode's free tier can only be used from within OpenCode"*, and `qwen3.6-27b` returns *"no router for requested model"*; other models time out. The adapter handles this correctly by design — `run.go:89-98` maps empty outcome to `retryable_failure`, and the worker's backoff (D14) retries. Re-test when the provider is healthy. |
 | 2 | End-to-end: idle-deck dispatches → wrapper clones → opencode works → Draft PR opens on the ticket | ❌ Not verified | All plumbing exists. No end-to-end evidence of a full pipeline run. |
 | 3 | Failing run preserves `debug/<task_id>`, returns `branch` artifact with `branch_purpose: debug` (I5) | ⚠️ Code exists | `OnFailure` in `workspace.go` implements this, but not verified end-to-end. |
 | 4 | `GET /health` reports model reachability, not liveness (D31) | ✅ Pass | `handleHealth` returns HTTP 200 with `reachable: false` when the model endpoint is down but the wrapper process is alive — never 503. A 503 would be *wrong*: idle-deck's `IdlePolicy` reads the `reachable` field, so a process-down-but-model-up machine would report reachable=true and idle-deck would spin. The criterion's original "503" wording predates D31/ADR 0016 and is corrected here, not in the code. |
@@ -114,6 +114,7 @@ a99a196 2026-10-05 issue #20: Harness adapter (wire contract, outcome mapping, c
 1. **End-to-end pipeline test.** No evidence of idle-deck dispatching a task that completes through the full pipeline: poll → enqueue → dequeue → Start → agent works → workspace commits → branch pushed → Draft PR opened. The pieces exist; nobody has wired the daemon's worker loop to a real remote wrapper and run a task through it.
 
 2. **Real opencode integration in CI.** `TestACP_RealOpencode` is gated behind `IDLE_DECK_REAL_ACP_TESTS=1` and skipped in CI. It would need credentials to pass.
+   **2026-10-17 status:** the gated test runs but fails with empty outcome. Diagnosed as **provider-side**, not a code defect — the default model `litellm/big-pickle` rejects with *"OpenCode's free tier can only be used from within OpenCode"*, `qwen3.6-27b` reports *"no router for requested model"*, and other models time out. The adapter maps empty outcome to `retryable_failure` (`run.go:89-98`) and the worker's backoff (D14) retries, so this is handled behaviour, not a bug. Re-test when the provider is healthy.
 
 ## Remaining work to close the issue
 
