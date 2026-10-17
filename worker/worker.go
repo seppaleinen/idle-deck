@@ -327,16 +327,29 @@ func (w *Worker) buildRunRequest(task queue.Task, lease queue.Lease) harness.Run
 		Budget:  budget,
 		Timeout: timeout,
 		RepoRef: harness.Repository{
-			// Both ID and Name carry task.RepositoryID (the tracker's
-			// owner/repo string, e.g. "seppaleinen/idle-deck"). No
-			// daemon-side stable repo id exists yet — the remote's
-			// toWorkspace reads only repo.URL, so both fields are
-			// currently inert on the wire. The conformance suite (C1–C9)
-			// exercises this wire shape, not identity semantics. A future
-			// daemon-side id (e.g. a hash of the allowlist entry) would be
-			// a D41-style trigger to differentiate them.
+			// ID and Name carry task.RepositoryID, the tracker's
+			// owner/repo string (e.g. "seppaleinen/idle-deck"). The
+			// remote ignores both — toWorkspace uses only
+			// repository.url (remote-contract §3, MVP note).
+			//
+			// URL carries the clone target: the remote clones, checks
+			// out, and pushes through repository.url, and nothing else
+			// (remote/server.go toWorkspace → WorktreeAt →
+			// ensureBareRepoInitialised → SetRemoteOrigin). It must be
+			// a value git can clone — a local filesystem path, or an
+			// https:// clone URL.
+			//
+			// It is set to task.RepositoryID here because that is the
+			// only repo identity the worker holds. The daemon must
+			// supply a clone-capable value there. The tracker currently
+			// stores owner/repo in task.RepositoryID, which the remote
+			// cannot clone (tokenURL rejects it: "unsupported protocol")
+			// — a known gap. The repositories table exists but is never
+			// populated; the intended fix is a registry resolving
+			// owner/repo → clone URL, surfaced by the e2e test below.
 			ID:      task.RepositoryID,
 			Name:    task.RepositoryID,
+			URL:     task.RepositoryID,
 			Tracker: task.Ticket.Tracker,
 		},
 		TicketRef: harness.TicketRef{

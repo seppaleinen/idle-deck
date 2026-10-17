@@ -67,6 +67,14 @@ func main() {
 			case "hang":
 				// Deliberately never respond. The probe must time out.
 			default: // "ok"
+				// Write a file to the workspace to make sure there is a change to commit.
+				if err := os.WriteFile("change.txt", []byte("change from fakeacp"), 0o644); err != nil {
+					// Ignore error; we still want to respond to the prompt.
+				}
+				// Output a notification that a tool call completed (a git push)
+				fmt.Fprintln(out, `{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"tool_call","toolCallId":"tool1","title":"git push origin feature/test-123","kind":"bash","status":"completed","rawInput":{},"rawOutput":{}}}}`)
+				out.Flush()
+				// Then output the actual response
 				fmt.Fprintf(out, `{"jsonrpc":"2.0","id":%d,"result":{"stopReason":"end_turn"}}`+"\n", id)
 			}
 		default:
