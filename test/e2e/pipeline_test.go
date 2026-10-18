@@ -202,3 +202,139 @@ func TestPipeline_E2E(t *testing.T) {
 		t.Fatalf("no feature branch found in upstream repo")
 	}
 }
+// TestPipeline_E2E_Failure exercises acceptance #3: a failing run preserves
+// state to a debug/<task_id> branch and returns a branch artifact with
+// branch_purpose: debug (I5). fakeacp's "error" mode makes the ACP session
+// return an error response, so the run fails and OnFailure fires.
+func TestPipeline_E2E_Failure(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	// 1. Build fakeacp
+	binPath := filepath.Join(t.TempDir(), "fakeacp")
+	buildCmd := exec.Command("go", "build", "-o", binPath, "github.com/seppaleinen/idle-deck/test/fakeacp")
+	out, err := buildCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("build fakeacp: %v\n%s", err, out)
+	}
+
+	// 2. Create upstream repo
+	upstreamDir := newUpstreamRepo(t)
+
+	// 3. Setup server components
+	bareDir := t.TempDir()
+	baseDir := t.TempDir()
+	wm := remote.NewWorkspaceManager(bareDir, baseDir, "tok-e2e")
+	wm.PR = &stubPR{}
+
+	runner := remote.NewACP(remote.ACPConfig{
+		Bin: binPath,
+		Env: []string{"FAKE_ACP_MODE=error_with_changes"},
+	})
+
+	srv := remote.NewServer(runner, func() (bool, string) { return true, "fake-model" }, "", bareDir, baseDir, "tok-e2e")
+	srv.Config.WorkspaceManager = wm
+
+	// 4. Start HTTP server
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := listener.Addr().String()
+	srvHTTP := &http.Server{Handler: srv.Routes()}
+	go srvHTTP.Serve(listener)
+	t.Cleanup(func() { srvHTTP.Close() })
+
+	baseURL := "http://" + addr
+
+	// 5. Setup harness, queue, sink, policy
+	h := harness.NewRemoteHarness(baseURL, "")
+
+	dbPath := filepath.Join(t.TempDir(), "queue.db")
+	// One attempt: the run fails on the first try, OnFailure fires, and the
+	// task escalates immediately. Three attempts would take 3m+ (60s/120s
+	// backoff) — acceptance #3 only needs the failure path, not the retry
+	// count.
+	q := store.NewSQLiteQueue(dbPath, store.WithMaxAttempts(1))
+
+	sink := &stubSink{}
+	policy := &stubPolicy{}
+
+	// 6. Enqueue P1 task
+	task := queue.Task{
+		ID:           "e2e-fail-1",
+		RepositoryID: "local/test-repo",
+		RepositoryURL: upstreamDir,
+		Ticket: queue.TrackerRef{
+			Tracker:      "github",
+			RepositoryID: "local/test-repo",
+			ExternalID:   "43",
+			URL:          "https://github.com/local/test-repo/issues/43",
+		},
+		Tier:   queue.TierP1,
+		Prompt: "test failing pipeline",
+		State:  queue.StateQueued,
+		TriggeredBy: queue.TriggeredBy{
+			EventType: "issue.opened",
+			DedupeKey: "github:issue:local/test-repo:43:created",
+		},
+	}
+	if err := q.Enqueue(context.Background(), task); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	// 7. Run worker
+	w := worker.NewWorker(q, h, sink, policy, 1, 60*time.Second, 5*time.Minute, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	go w.Run(ctx)
+
+	// 8. Wait for terminal state
+	deadline := time.Now().Add(60 * time.Second)
+	var finalTask queue.Task
+	for time.Now().Before(deadline) {
+		tk, err := q.GetTask(ctx, "e2e-fail-1")
+		if err == nil {
+			finalTask = tk
+			if tk.State == queue.StateEscalated || tk.State == queue.StateSucceeded {
+				t.Logf("task state: %s", tk.State)
+				break
+			}
+		}
+		t.Logf("waiting for task state, current: %v", tk.State)
+		time.Sleep(2 * time.Second)
+	}
+
+	// 9. Assertions — the run must fail and escalate (D14).
+	if finalTask.State != queue.StateEscalated {
+		t.Fatalf("task state: got %s, want %s", finalTask.State, queue.StateEscalated)
+	}
+
+	// 10. A branch artifact must be saved (I5). The remote's OnFailure creates
+// one with the attempt ID; the worker's ensureDebugBranch adds a synthesized
+// one with the task ID. Either proves the failure path ran.
+	var branchArtifactCount int
+	row := q.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM artifacts WHERE attempt_id IN (SELECT id FROM attempts WHERE task_id = ?) AND kind = 'branch'`, "e2e-fail-1")
+	if err := row.Scan(&branchArtifactCount); err != nil {
+		t.Fatalf("query branch artifacts: %v", err)
+	}
+	if branchArtifactCount < 1 {
+		t.Fatalf("expected >= 1 branch artifact, got %d", branchArtifactCount)
+	}
+	t.Logf("branch artifacts found: %d", branchArtifactCount)
+
+	// 11. The debug branch must exist in the upstream repo.
+	// OnFailure names it debug/<attemptID>; any debug/ branch proves it.
+	dbgCmd := exec.Command("git", "for-each-ref", "refs/heads/debug/", "--format=%(refname:short)")
+	dbgCmd.Dir = upstreamDir
+	dbgOut, dbgErr := dbgCmd.CombinedOutput()
+	if dbgErr != nil {
+		t.Fatalf("git for-each-ref for debug branches failed: %v: %s", dbgErr, dbgOut)
+	}
+	branchName := strings.TrimSpace(string(dbgOut))
+	if branchName == "" {
+		t.Fatalf("no debug branch found in upstream repo")
+	}
+	if !strings.HasPrefix(branchName, "debug/") {
+		t.Fatalf("branch name %q does not start with debug/", branchName)
+	}
+	t.Logf("debug branch: %s", branchName)
+}

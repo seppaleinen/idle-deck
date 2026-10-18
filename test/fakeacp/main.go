@@ -64,6 +64,13 @@ func main() {
 			switch mode {
 			case "error":
 				fmt.Fprintf(out, `{"jsonrpc":"2.0","id":%d,"error":{"code":-32603,"message":"Internal error: Rate limit exceeded. Please try again later."}}`+"\n", id)
+			case "error_with_changes":
+				// Write a file to the workspace so there are changes to commit,
+				// then return an error (simulates agent doing work then failing).
+				if err := os.WriteFile("change.txt", []byte("change from fakeacp before error"), 0o644); err != nil {
+					// Ignore error; we still want to respond to the prompt.
+				}
+				fmt.Fprintf(out, `{"jsonrpc":"2.0","id":%d,"error":{"code":-32603,"message":"Internal error: Rate limit exceeded. Please try again later."}}`+"\n", id)
 			case "hang":
 				// Deliberately never respond. The probe must time out.
 			default: // "ok"
