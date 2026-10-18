@@ -175,6 +175,7 @@ Recorded because six tickets' worth of silence from the first check read as appr
 | [0020](0020-sweep-findings-typed.md) | P3 sweep findings are typed and forwarded to TrackerSink.OpenIssue | accepted (from D43) |
 | [0021](0021-worker-composition-root.md) | The worker is the composition root: a concrete struct with constructor + Run(ctx), owning the pipeline (idle gate, retry/escalation, preemption, backoff) | accepted (from D8, D14) |
 | [0022](0022-idle-means-reachable-and-has-capacity.md) | Idle means reachable AND has capacity; /health gains a `busy` field; gating is opt-in via `IDLE_DECK_YIELD_WHEN_BUSY` (default false) | accepted (from D49, amending D31) |
+| [0023](0023-idle-deck-does-not-run-agent-loops.md) | idle-deck runs no agent loop; the coordinator's only loop is a scheduler tick, and any reasoning loop lives in the remote harness | accepted (from D50) |
 
 ## Supersessions, and what they cost
 
