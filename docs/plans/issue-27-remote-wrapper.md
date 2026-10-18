@@ -104,7 +104,7 @@ a99a196 2026-10-05 issue #20: Harness adapter (wire contract, outcome mapping, c
 |---|---|---|---|
 | 1 | Wrapper speaks all four endpoints and passes C1–C9 against a real opencode run | ⚠️ Partial | C1–C4 pass server-level. C5–C9 pass black-box adapter-level against stubs. Real opencode smoke test exists but is gated (`IDLE_DECK_REAL_ACP_TESTS=1`) and requires credentials — not run in CI. **Investigated 2026-10-17:** the gated test runs but returns empty outcome. Diagnosed as **provider-side**, not a code defect: the default model `litellm/big-pickle` returns *"OpenCode's free tier can only be used from within OpenCode"*, and `qwen3.6-27b` returns *"no router for requested model"*; other models time out. The adapter handles this correctly by design — `run.go:89-98` maps empty outcome to `retryable_failure`, and the worker's backoff (D14) retries. Re-test when the provider is healthy. |
 | 2 | End-to-end: idle-deck dispatches → wrapper clones → opencode works → Draft PR opens on the ticket | ✅ **Verified** (2026-10-17) | `test/e2e/pipeline_test.go` — runs in `go test ./...` with **no build tag, no env gate, no credentials**. It builds `test/fakeacp`, starts the real `remote.Server` + `harness.NewRemoteHarness` + `store.NewSQLiteQueue` + `worker.NewWorker`, and asserts the whole chain: dispatch → remote clone → ACP work → workspace commit → `feature/` branch pushed → Draft PR opened. ~10s, deterministic. This is the CI gate acceptance #2 needs. The real-opencode variant stays gated behind `IDLE_DECK_REAL_ACP_TESTS` and waits on provider health. |
-| 3 | Failing run preserves `debug/<task_id>`, returns `branch` artifact with `branch_purpose: debug` (I5) | ⚠️ Code exists | `OnFailure` in `workspace.go` implements this, but not verified end-to-end. |
+| 3 | Failing run preserves `debug/<task_id>`, returns `branch` artifact with `branch_purpose: debug` (I5) | ✅ **Verified** (2026-10-17) | `TestPipeline_E2E_Failure` in `test/e2e/pipeline_test.go` — uses `fakeacp` `error_with_changes` mode, asserts escalation, branch artifact saved, `debug/<attemptID>` branch pushed to upstream. Runs in `go test ./...` with no build tag, no env gate, no credentials. Committed `3a08d6e`. |
 | 4 | `GET /health` reports model reachability, not liveness (D31) | ✅ Pass | `handleHealth` returns HTTP 200 with `reachable: false` when the model endpoint is down but the wrapper process is alive — never 503. A 503 would be *wrong*: idle-deck's `IdlePolicy` reads the `reachable` field, so a process-down-but-model-up machine would report reachable=true and idle-deck would spin. The criterion's original "503" wording predates D31/ADR 0016 and is corrected here, not in the code. |
 | 5 | Retried `POST /v1/runs` with same `attempt_id` returns same `run_id`, never a second execution (C1) | ✅ Pass | `TestConformanceC1_IdempotentStart` passes; idempotency map enforced in `handleRuns`. |
 | 6 | ACP adapter is one file; swapping opencode for another ACP CLI is a one-line binary change | ✅ Pass | `remote/acp.go` is one file. `IDLE_DECK_REMOTE_AGENT_BIN` configures the binary (D46). |
@@ -112,18 +112,22 @@ a99a196 2026-10-05 issue #20: Harness adapter (wire contract, outcome mapping, c
 ## What is NOT done
 
 1. ~~**End-to-end pipeline test.**~~ ✅ **Done 2026-10-17** — `test/e2e/pipeline_test.go` runs in
-   `go test ./...` with no build tag, no env gate, no credentials. See acceptance #2 above.
+   `go test ./...` with no build tag, no env gate, no credentials. See acceptance #2 and #3 above.
 
 2. **Real opencode integration in CI.** `TestACP_RealOpencode` is gated behind `IDLE_DECK_REAL_ACP_TESTS=1` and skipped in CI. It would need credentials to pass.
    **2026-10-17 status:** the gated test runs but fails with empty outcome. Diagnosed as **provider-side**, not a code defect — the default model `litellm/big-pickle` rejects with *"OpenCode's free tier can only be used from within OpenCode"*, `qwen3.6-27b` reports *"no router for requested model"*, and other models time out. The adapter maps empty outcome to `retryable_failure` (`run.go:89-98`) and the worker's backoff (D14) retries, so this is handled behaviour, not a bug. Re-test when the provider is healthy.
+   **2026-10-18 recheck:** the provider is still unhealthy — `litellm.labb.site/v1/models` returns
+   `401 Authentication Error, No api key passed in.` Acceptance #1 stays blocked on provider health, not on code.
 
-3. **Known production gap (surfaced, not fixed):** `worker.buildRunRequest` sets `RepoRef.URL = task.RepositoryID`,
-   but `tracker/github.go` stores `RepositoryID` as an `owner/repo` string, while the remote's `toWorkspace`
-   reads `repository.url` and `tokenURL` rejects an owner/repo with *"unsupported protocol in remote URL"*.
-   The `repositories` table in `store` is write-only. The e2e passes because it feeds a local filesystem path
-   as the URL — a valid `tokenURL` input — which is exactly what exposed the asymmetry. Fixing it needs a
-   registry that resolves `owner/repo` → clone URL (and the GitHub token for private repos). This is a
-   tracker/store change, not a wrapper change.
+3. **Known production gap — closed 2026-10-17.** `worker.buildRunRequest` sets `RepoRef.URL = task.RepositoryURL`,
+   and the tracker now supplies `RepositoryURL` as a clone-capable value on **every** ingestion path:
+   `GitHub.Parse` (P0/P1/P2, `github.go:176`) and `Poller.Sweep` (P3, `poller.go:138`) both call
+   `cloneURL(repo)`, which derives `https://<host>/<owner/repo>.git` from the tracker's `apiURL` host
+   (github.com → github.com; GHE → same host). The remote's `toWorkspace` reads `repository.url` and
+   `tokenURL` now receives a real clone URL on all tiers, so the *"unsupported protocol in remote URL"*
+   failure mode is gone. Schema v11 adds `repository_url` to `tasks`; `queue/queue.go` carries the field.
+   Private repos additionally need `IDLE_DECK_GITHUB_TOKEN` configured (remote/server.go `NewServer`).
+   The e2e still feeds a local filesystem path as the URL, which remains a valid `tokenURL` input.
 
 ## Remaining work to close the issue
 
@@ -132,9 +136,10 @@ a99a196 2026-10-05 issue #20: Harness adapter (wire contract, outcome mapping, c
 | ~~Wire `OnSuccess`/`OnFailure` into `Run.collect()`~~ | Small | Done — commit `04e7312` |
 | ~~Add worktree GC (honor `WorktreeTTL`)~~ | Small | Done — [#31](https://github.com/seppaleinen/idle-deck/issues/31), commit `8944734` |
 | ~~End-to-end test (local or cluster)~~ | Medium | ✅ Done — `test/e2e/pipeline_test.go`, commit `0bc6521` |
-| Run real opencode smoke test (manual, with creds) | Small | Acceptance #1 |
-| Resolve `owner/repo` → clone URL gap (see "What is NOT done" #3) | Medium | Acceptance #2 in production |
-| Close issue #27 on GitHub | — | Acceptance #1 and #2 |
+| ~~Verify failing-run → debug branch end-to-end~~ | Small | ✅ Done — `TestPipeline_E2E_Failure`, commit `3a08d6e` |
+| ~~Resolve `owner/repo` → clone URL gap~~ | Medium | ✅ Done — tracker supplies `RepositoryURL` on all tiers; schema v11; commit `8b921b7` |
+| Run real opencode smoke test (manual, with creds) | Small | Acceptance #1 — blocked on provider health (2026-10-18 recheck: 401) |
+| Close issue #27 on GitHub | — | Acceptance #1 only |
 
 ## Architecture decisions touched
 
