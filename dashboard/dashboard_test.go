@@ -12,6 +12,7 @@ import (
 
 	"github.com/seppaleinen/idle-deck/config"
 	"github.com/seppaleinen/idle-deck/store"
+	"github.com/seppaleinen/idle-deck/tracker"
 )
 
 func TestServer_Smoke(t *testing.T) {
@@ -301,5 +302,76 @@ func TestServer_Tasks(t *testing.T) {
 				t.Errorf("%s: len(tasks) %d, want %d", tc.path, len(tasks), tc.wantTasks)
 			}
 		}
+	}
+}
+
+
+// fakeTracker is a minimal TrackerIssueLister for dashboard tests.
+type fakeTracker struct {
+	prState string
+}
+
+func (f fakeTracker) ListIssuesWithLabel(ctx context.Context, label string) ([]tracker.IssueSummary, error) {
+	return []tracker.IssueSummary{}, nil
+}
+func (f fakeTracker) PRState(ctx context.Context, prURL string) (string, error) {
+	return f.prState, nil
+}
+
+func TestServer_Summary_PRState(t *testing.T) {
+	dbPath := t.TempDir() + "/idle-deck.db"
+	ctx := context.Background()
+	db, err := store.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+
+	cfg := config.Defaults()
+	cfg.DB = dbPath
+	cfg.DashboardAddr = "127.0.0.1:0"
+
+	srv, err := NewServer(cfg, db, fakeTracker{prState: "merged"})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	defer srv.Close()
+
+	now := time.Now()
+	finishedAt := now.UnixNano()
+	_, err = db.Exec(`INSERT INTO tasks (id, repository_id, ticket_tracker, ticket_repo_id, ticket_external_id, ticket_url, tier, prompt, state, event_type, dedupe_key, received_at, created_at)
+		VALUES ('task-pr', 'test/repo', 'github', 'test/repo', '1', 'https://gh.com/1', 'P1', 'Task with PR', 'succeeded', 'issue_created', 'dedupe-pr', ?, ?)`, finishedAt, finishedAt)
+	if err != nil {
+		t.Fatalf("insert task: %v", err)
+	}
+	_, err = db.Exec(`INSERT INTO attempts (id, task_id, ordinal, outcome, started_at, finished_at)
+		VALUES ('att-pr', 'task-pr', 1, 'succeeded', ?, ?)`, finishedAt, finishedAt)
+	if err != nil {
+		t.Fatalf("insert attempt: %v", err)
+	}
+	_, err = db.Exec(`INSERT INTO artifacts (id, attempt_id, kind, uri, produced_at)
+		VALUES ('art-pr', 'att-pr', 'pull_request', 'https://github.com/test/repo/pull/42', ?)`, finishedAt)
+	if err != nil {
+		t.Fatalf("insert artifact: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/summary", nil)
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /api/summary: status %d, body %s", w.Code, w.Body.String())
+	}
+	var resp SummaryResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Concluded) != 1 {
+		t.Fatalf("expected 1 concluded item, got %d", len(resp.Concluded))
+	}
+	if resp.Concluded[0].PRURL != "https://github.com/test/repo/pull/42" {
+		t.Errorf("PRURL mismatch: got %q", resp.Concluded[0].PRURL)
+	}
+	if resp.Concluded[0].PRState != "merged" {
+		t.Errorf("PRState not enriched: got %q, want merged", resp.Concluded[0].PRState)
 	}
 }

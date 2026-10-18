@@ -51,13 +51,14 @@
     }
     items.forEach(c => {
       const tr = document.createElement('tr');
+      const prBadge = c.pr_state ? ` <span class="badge badge-${c.pr_state}">${c.pr_state}</span>` : '';
       tr.innerHTML = `
         <td><code>${c.task_id.slice(0, 8)}</code></td>
         <td class="tier-${c.tier}">${c.tier}</td>
         <td class="outcome-${c.outcome.replace(/_/g, '-')}">${c.outcome}</td>
         <td>${relativeTime(c.finished_at)}<span title="${fmt(new Date(c.finished_at))}">&nbsp;</span></td>
         <td>${c.ticket_url ? `<a href="${c.ticket_url}" target="_blank">link</a>` : '—'}</td>
-        <td>${c.pr_url ? `<a href="${c.pr_url}" target="_blank">link</a>` : '—'}</td>
+        <td>${c.pr_url ? `<a href="${c.pr_url}" target="_blank">link</a>${prBadge}` : '—'}</td>
       `;
       tbody.appendChild(tr);
     });

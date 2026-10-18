@@ -88,6 +88,11 @@ footer {
 .badge.warn { background: rgba(210,153,34,0.15); color: var(--warn); }
 .badge.err { background: rgba(248,81,73,0.15); color: var(--err); }
 .badge.neutral { background: rgba(139,147,161,0.15); color: var(--muted); }
+/* PR state badges for review inbox (#36) */
+.badge-merged { background: rgba(63,185,80,0.15); color: var(--ok); }
+.badge-open   { background: rgba(139,147,161,0.15); color: var(--muted); }
+.badge-draft  { background: rgba(139,147,161,0.15); color: var(--muted); }
+.badge-closed { background: rgba(248,81,73,0.15); color: var(--err); }
 
 .state-queued    { color: var(--muted); }
 .state-running   { color: var(--accent); }

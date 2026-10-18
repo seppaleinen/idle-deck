@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -247,7 +248,74 @@ func (g *GitHub) OpenIssue(ctx context.Context, repo string, title, body string,
 	return g.postIssue(ctx, repo, title, body, labels)
 }
 
-// IssueSummary is a lightweight issue summary for dashboard display (#36).
+// PRState implements TrackerIssueLister.PRState (dashboard review-inbox #36).
+// It fetches a pull request via the GitHub API and returns a normalized state:
+// "merged", "draft", "open", or "closed". Errors are returned as-is; the
+// dashboard degrades gracefully when PR state cannot be determined.
+// The PR URL must be a GitHub/GHE URL of the form:
+// https://github.com/owner/repo/pull/123.
+func (g *GitHub) PRState(ctx context.Context, prURL string) (string, error) {
+	owner, repo, number, err := parsePRURL(prURL)
+	if err != nil {
+		return "", fmt.Errorf("tracker: pr state: invalid URL %s: %w", prURL, err)
+	}
+	// The API path is the same for GitHub.com and GHE. g.apiURL already
+	// points to the correct base (api.github.com or GHE api host).
+	endpoint := fmt.Sprintf("%s/repos/%s/%s/pulls/%d", g.apiURL, owner, repo, number)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", fmt.Errorf("tracker: pr state request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+g.token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	resp, err := g.httpClient().Do(req)
+	if err != nil {
+		return "", fmt.Errorf("tracker: pr state request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return "", fmt.Errorf("tracker: pr state %s/%s#%d: %d %s", owner, repo, number, resp.StatusCode, string(b))
+	}
+	var pr struct {
+		State    string `json:"state"`    // "open" | "closed"
+		Draft    bool   `json:"draft"`
+		Merged   bool   `json:"merged"`   // true if merged
+		MergedAt *string `json:"merged_at"` // nil if not merged
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&pr); err != nil {
+		return "", fmt.Errorf("tracker: pr state decode: %w", err)
+	}
+	switch {
+	case pr.Merged:
+		return "merged", nil
+	case pr.State == "open" && pr.Draft:
+		return "draft", nil
+	case pr.State == "open":
+		return "open", nil
+	default:
+		return "closed", nil
+	}
+}
+
+// parsePRURL extracts owner/repo/number from a GitHub/GHE pull request URL.
+// Expected format: https://host/owner/repo/pull/123
+func parsePRURL(u string) (owner, repo string, number int, err error) {
+	p, err := url.Parse(u)
+	if err != nil {
+		return "", "", 0, err
+	}
+	segs := strings.Split(strings.Trim(p.Path, "/"), "/")
+	if len(segs) != 4 || segs[2] != "pull" {
+		return "", "", 0, fmt.Errorf("unexpected path %s", p.Path)
+	}
+	n, err := strconv.Atoi(segs[3])
+	if err != nil {
+		return "", "", 0, fmt.Errorf("invalid pull number %q", segs[3])
+	}
+	return segs[0], segs[1], n, nil
+}
+
 type IssueSummary struct {
 	Repo   string `json:"repo"`
 	Number int    `json:"number"`

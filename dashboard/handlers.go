@@ -632,6 +632,7 @@ type ConcludedItem struct {
 	FinishedAt time.Time `json:"finished_at"`
 	TicketURL  string    `json:"ticket_url"`
 	PRURL      string    `json:"pr_url,omitempty"`
+	PRState    string    `json:"pr_state,omitempty"` // "open", "closed", "merged" — empty if unknown
 }
 
 type AwaitingItem struct {
@@ -693,6 +694,23 @@ func (s *Server) handleSummary(w http.ResponseWriter, r *http.Request) {
 	}
 	if concluded == nil {
 		concluded = []ConcludedItem{}
+	}
+	// Enrich concluded items with PR state (merged / open / draft / closed).
+	// Degrades gracefully when the tracker is not configured, or the PR does
+	// not exist, or the GitHub API call fails.
+	if s.trk != nil {
+		for i := range concluded {
+			if concluded[i].PRURL == "" {
+				continue
+			}
+			state, err := s.trk.PRState(ctx, concluded[i].PRURL)
+			if err != nil {
+				// Graceful degradation: leave PRState empty and continue.
+				// A failing PR lookup is not a fatal summary error.
+				continue
+			}
+			concluded[i].PRState = state
+		}
 	}
 
 	awaiting, err := s.queryAwaiting(ctx)

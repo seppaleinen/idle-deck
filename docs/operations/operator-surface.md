@@ -485,8 +485,11 @@ the page renders "never" and the button reads "Mark all as read". Empty sections
 | `questions` | Open `idle-needs-human` issues (D29) from the tracker — the sweep's findings (D43) and escalated tasks' diagnostics (D45) are exactly what carries this label. |
 | `suggested_next` | The highest-tier queued task (P0 < P1 < P2 < P3, FIFO within a tier), or the oldest running task if nothing is queued. **Omitted entirely** when there is nothing actionable — the page then says "nothing queued". |
 
-Per D48 the user is the one who merges Draft PRs, so the summary shows the PR URL and stops: PR
-state is deliberately not queried (§11's follow-up list).
+Per D48 the user is the one who merges Draft PRs, so the summary shows the PR URL and the PR state:
+the tracker seam (`TrackerIssueLister.PRState`) now queries the GitHub API for each PR artifact
+returning `merged` / `open` / `draft` / `closed`. When the tracker is nil the dashboard degrades
+gracefully — the PR URL is still shown but `pr_state` is omitted. The query is read-only and
+degrades gracefully on error; a failing PR lookup is not a 500.
 
 ### `POST /api/summary/seen`
 
@@ -509,9 +512,7 @@ any other work-state table. The single new write is the `dashboard_visits` marke
 
 ### Deliberately absent / follow-up
 
-- **No merged-vs-open PR distinction.** The PR URL is shown and the user sees the PR's state from
-  there (D48: the pipeline lead merges on explicit user instruction; the dashboard does not chase PR
-  state). Flagged as a follow-up.
+- ~~**No merged-vs-open PR distinction.** The PR URL is shown and the user sees the PR's state from~~ **PR state is now displayed.** The summary enriches each concluded item with `pr_state` (`merged` / `open` / `draft` / `closed`) by querying the GitHub API through the same tracker seam used for questions. When the tracker is nil or the API call fails, the URL is still shown with `pr_state` omitted — graceful degradation.
 - **No unread count or per-item read state.** One marker row is the whole memory of the inbox; a
   "since last review" digest is the stated intent, not a notifications system.
 - **No cross-device or per-browser `last_seen`.** Server-side is a deliberate property (§11's

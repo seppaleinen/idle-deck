@@ -19,6 +19,9 @@ import (
 // satisfies it structurally; nil disables the questions section.
 type TrackerIssueLister interface {
 	ListIssuesWithLabel(ctx context.Context, label string) ([]tracker.IssueSummary, error)
+	// PRState returns the state of a PR by URL: "open", "closed", or "merged".
+	// Used by the summary page to distinguish merged vs open Draft PRs.
+	PRState(ctx context.Context, prURL string) (string, error)
 }
 
 type Server struct {
