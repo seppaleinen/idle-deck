@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/seppaleinen/idle-deck/queue"
 )
 
 // Required environment variables. The daemon refuses to start without these.
@@ -95,14 +97,14 @@ var fields = []fieldMeta{
 	{name: "MaxConcurrent", key: "IDLE_DECK_MAX_CONCURRENT_JOBS", kind: kindInt, default_: "1", flag: "max-concurrent-jobs"},
 	{name: "LogLevel", key: "IDLE_DECK_LOG_LEVEL", kind: kindString, default_: "info", flag: "log-level"},
 	{name: "LogFormat", key: "IDLE_DECK_LOG_FORMAT", kind: kindString, default_: "json", flag: "log-format"},
-	{name: "TierTimeoutPlan", key: "IDLE_DECK_TIER_TIMEOUT_PLAN", kind: kindDurationSeconds, default_: "900", flag: "tier-timeout-plan"},
-	{name: "TierTimeoutDo", key: "IDLE_DECK_TIER_TIMEOUT_DO", kind: kindDurationSeconds, default_: "10800", flag: "tier-timeout-do"},
-	{name: "TierTimeoutSweep", key: "IDLE_DECK_TIER_TIMEOUT_SWEEP", kind: kindDurationSeconds, default_: "3600", flag: "tier-timeout-sweep"},
-	{name: "TierTimeoutHotfix", key: "IDLE_DECK_TIER_TIMEOUT_HOTFIX", kind: kindDurationSeconds, default_: "1800", flag: "tier-timeout-hotfix"},
-	{name: "BudgetPlan", key: "IDLE_DECK_BUDGET_PLAN", kind: kindInt, default_: "5000", flag: "budget-plan"},
-	{name: "BudgetDo", key: "IDLE_DECK_BUDGET_DO", kind: kindInt, default_: "100000", flag: "budget-do"},
-	{name: "BudgetSweep", key: "IDLE_DECK_BUDGET_SWEEP", kind: kindInt, default_: "20000", flag: "budget-sweep"},
-	{name: "BudgetHotfix", key: "IDLE_DECK_BUDGET_HOTFIX", kind: kindInt, default_: "50000", flag: "budget-hotfix"},
+	{name: "TierTimeoutPlan", key: "IDLE_DECK_TIER_TIMEOUT_PLAN", kind: kindDurationSeconds, default_: fmt.Sprintf("%d", queue.DefaultTimeoutForTier(queue.TierP1)), flag: "tier-timeout-plan"},
+	{name: "TierTimeoutDo", key: "IDLE_DECK_TIER_TIMEOUT_DO", kind: kindDurationSeconds, default_: fmt.Sprintf("%d", queue.DefaultTimeoutForTier(queue.TierP2)), flag: "tier-timeout-do"},
+	{name: "TierTimeoutSweep", key: "IDLE_DECK_TIER_TIMEOUT_SWEEP", kind: kindDurationSeconds, default_: fmt.Sprintf("%d", queue.DefaultTimeoutForTier(queue.TierP3)), flag: "tier-timeout-sweep"},
+	{name: "TierTimeoutHotfix", key: "IDLE_DECK_TIER_TIMEOUT_HOTFIX", kind: kindDurationSeconds, default_: fmt.Sprintf("%d", queue.DefaultTimeoutForTier(queue.TierP0)), flag: "tier-timeout-hotfix"},
+	{name: "BudgetPlan", key: "IDLE_DECK_BUDGET_PLAN", kind: kindInt, default_: fmt.Sprintf("%d", queue.DefaultBudgetForTier(queue.TierP1)), flag: "budget-plan"},
+	{name: "BudgetDo", key: "IDLE_DECK_BUDGET_DO", kind: kindInt, default_: fmt.Sprintf("%d", queue.DefaultBudgetForTier(queue.TierP2)), flag: "budget-do"},
+	{name: "BudgetSweep", key: "IDLE_DECK_BUDGET_SWEEP", kind: kindInt, default_: fmt.Sprintf("%d", queue.DefaultBudgetForTier(queue.TierP3)), flag: "budget-sweep"},
+	{name: "BudgetHotfix", key: "IDLE_DECK_BUDGET_HOTFIX", kind: kindInt, default_: fmt.Sprintf("%d", queue.DefaultBudgetForTier(queue.TierP0)), flag: "budget-hotfix"},
 	{name: "GitHubAPI", key: "IDLE_DECK_GITHUB_API", kind: kindString, default_: "https://api.github.com", flag: "github-api"},
 	{name: "RetryBackoffInitial", key: "IDLE_DECK_RETRY_BACKOFF_INITIAL", kind: kindDurationSeconds, default_: "30", flag: "retry-backoff-initial"},
 	{name: "RetryBackoffMax", key: "IDLE_DECK_RETRY_BACKOFF_MAX", kind: kindDurationSeconds, default_: "600", flag: "retry-backoff-max"},

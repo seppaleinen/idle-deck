@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"strings"
 )
 
 // TaskTier is the authoritative priority of a Task (D8, D16).
@@ -81,6 +83,72 @@ func RoleForTier(tier TaskTier) TaskRole {
 	default:
 		return RoleDo
 	}
+}
+
+// TierMeta holds the single source of truth for tier metadata (D37, M4, M3, L7).
+// Rank: lower = higher priority (P0=0, P1=1, P2=2, P3=3).
+// DefaultTimeout: per-tier timeout default in seconds (D37).
+// DefaultBudget: per-tier budget default in generation tokens (D37).
+type TierMeta struct {
+	Rank            int
+	DefaultTimeout  int // seconds
+	DefaultBudget   int // generation tokens
+}
+
+// TierMetaTable is the authoritative tier metadata table.
+// All tier-derived values (worker fallbacks, claim ordering, config defaults)
+// MUST derive from this table. Changing a value here updates all consumers.
+var TierMetaTable = map[TaskTier]TierMeta{
+	TierP0: {Rank: 0, DefaultTimeout: 1800, DefaultBudget: 50000},
+	TierP1: {Rank: 1, DefaultTimeout: 900, DefaultBudget: 5000},
+	TierP2: {Rank: 2, DefaultTimeout: 10800, DefaultBudget: 100000},
+	TierP3: {Rank: 3, DefaultTimeout: 3600, DefaultBudget: 20000},
+}
+
+// TierRank returns the numeric rank for a tier (lower = higher priority).
+// This is the single source for tier ranking used by worker, store claim scan,
+// and dashboard suggested-next (M4).
+func TierRank(tier TaskTier) int {
+	if m, ok := TierMetaTable[tier]; ok {
+		return m.Rank
+	}
+	return 99
+}
+
+// DefaultTimeoutForTier returns the tier default timeout in seconds (D37).
+// This is the single source for tier timeout defaults.
+func DefaultTimeoutForTier(tier TaskTier) int {
+	if m, ok := TierMetaTable[tier]; ok {
+		return m.DefaultTimeout
+	}
+	return 0
+}
+
+// DefaultBudgetForTier returns the tier default budget in generation tokens (D37).
+// This is the single source for tier budget defaults.
+func DefaultBudgetForTier(tier TaskTier) int {
+	if m, ok := TierMetaTable[tier]; ok {
+		return m.DefaultBudget
+	}
+	return 0
+}
+
+// TierOrderingSQL returns a SQL CASE expression that maps tiers to their rank
+// in the order defined by TierMetaTable. This is the single source for tier
+// ranking in SQL queries (store claim scan, dashboard suggested-next).
+func TierOrderingSQL() string {
+	// Generate CASE WHEN tier = 'P0' THEN 0 ... from TierMetaTable
+	// Order by rank ascending.
+	// This ensures SQL ordering never drifts from TierMetaTable.
+	// Keep unknown tiers at 99.
+	var cases []string
+	tiers := []TaskTier{TierP0, TierP1, TierP2, TierP3}
+	for _, t := range tiers {
+		if m, ok := TierMetaTable[t]; ok {
+			cases = append(cases, fmt.Sprintf("WHEN '%s' THEN %d", t, m.Rank))
+		}
+	}
+	return fmt.Sprintf("CASE tier %s ELSE 99 END", strings.Join(cases, " "))
 }
 
 // TriggeredBy is the provenance value object (ontology).

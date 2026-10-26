@@ -76,20 +76,6 @@ func (q *SQLiteQueue) Enqueue(ctx context.Context, task queue.Task) error {
 	if task.CreatedAt == 0 {
 		task.CreatedAt = t.UnixNano()
 	}
-	tierRank := func(t queue.TaskTier) int {
-		switch t {
-		case queue.TierP0:
-			return 0
-		case queue.TierP1:
-			return 1
-		case queue.TierP2:
-			return 2
-		case queue.TierP3:
-			return 3
-		default:
-			return 99
-		}
-	}
 	const qInsert = `
 INSERT OR IGNORE INTO tasks (id, repository_id, ticket_tracker, ticket_repo_id,
 	ticket_external_id, ticket_url, tier, prompt, payload, timeout_seconds,
@@ -122,7 +108,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)`
 	al := q.active
 	evTier := task.Tier
 	q.mu.Unlock()
-	if al != nil && tierRank(evTier) < tierRank(al.tier) {
+	if al != nil && queue.TierRank(evTier) < queue.TierRank(al.tier) {
 		select {
 		case q.events <- queue.QueueEvent{Tier: evTier}:
 		default:
@@ -201,15 +187,18 @@ WHERE state = 'running' AND id IN (
 	var taskID, tier string
 	var created int64
 	var taskTier int
-	err = tx.QueryRowContext(ctx, `
+	var taskTimeout int
+	rankingSQL := queue.TierOrderingSQL()
+	err = tx.QueryRowContext(ctx, fmt.Sprintf(`
 SELECT id, tier,
-       CASE tier WHEN 'P0' THEN 0 WHEN 'P1' THEN 1 WHEN 'P2' THEN 2 WHEN 'P3' THEN 3 ELSE 99 END,
-       created_at
+       %s,
+       created_at,
+       timeout_seconds
   FROM tasks
  WHERE state = 'queued'
- ORDER BY CASE tier WHEN 'P0' THEN 0 WHEN 'P1' THEN 1 WHEN 'P2' THEN 2 WHEN 'P3' THEN 3 ELSE 99 END ASC, created_at ASC, id ASC
+ ORDER BY %s ASC, created_at ASC, id ASC
  LIMIT 1
-`).Scan(&taskID, &tier, &taskTier, &created)
+`, rankingSQL, rankingSQL)).Scan(&taskID, &tier, &taskTier, &created, &taskTimeout)
 	if err == sql.ErrNoRows {
 		tx.Rollback()
 		return queue.Lease{}, queue.ErrNoWork
@@ -220,6 +209,13 @@ SELECT id, tier,
 	}
 	attemptID := newID()
 	expiry := now.Add(q.lease)
+	// Effective timeout (D17, D37): task override wins; otherwise the tier
+	// default from queue.TierMetaTable. Recorded on the attempt so the
+	// attempts ledger is truthful (M3: no more -1 sentinel).
+	effectiveTimeout := taskTimeout
+	if effectiveTimeout <= 0 {
+		effectiveTimeout = queue.DefaultTimeoutForTier(queue.TaskTier(tier))
+	}
 	var ordinal int
 	err = tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(ordinal), 0) + 1 FROM attempts WHERE task_id = ?`, taskID).Scan(&ordinal)
 	if err != nil {
@@ -229,7 +225,7 @@ SELECT id, tier,
 	_, err = tx.ExecContext(ctx, `
 INSERT INTO attempts (id, task_id, ordinal, outcome, started_at, timeout_seconds, remote_session_id)
 VALUES (?, ?, ?, '', ?, ?, '')`,
-		attemptID, taskID, ordinal, now.UnixNano(), -1)
+		attemptID, taskID, ordinal, now.UnixNano(), effectiveTimeout)
 	if err != nil {
 		tx.Rollback()
 		return queue.Lease{}, fmt.Errorf("store: attempt insert: %w", err)
