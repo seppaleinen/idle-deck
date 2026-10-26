@@ -340,8 +340,12 @@ func TestPollerTick(t *testing.T) {
 		User:      stubs.GitHubUser{Type: "User"},
 	})
 	ctx := context.Background()
-	if err := p.Tick(ctx); err != nil {
+	completed, err := p.Tick(ctx)
+	if err != nil {
 		t.Fatalf("Tick failed: %v", err)
+	}
+	if len(completed) != 1 || completed[0] != "acme/widgets" {
+		t.Fatalf("completed: got %v, want [acme/widgets]", completed)
 	}
 	var count int
 	err = db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM tasks WHERE ticket_repo_id = 'acme/widgets'`).Scan(&count)
