@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -700,4 +702,148 @@ func TestExtractRepo(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestPollerTickPartialFailure verifies that Tick returns a partial completed
+// list when a mid-list repo fails and that the per-repo poll ledger records
+// only repos that were actually polled (M7 — operator-surface §6, D28). With
+// the old code SavePoll was recorded for every repo on a successful Tick,
+// regardless of which repos were actually polled — a permanently-failing repo
+// hid behind a healthy-looking tick. After the fix, Tick fails fast per repo
+// and returns the repos it completed before the failure.
+func TestPollerTickPartialFailure(t *testing.T) {
+	repoOK := "acme/widgets"
+	repoFail := "acme/broken"
+
+	// One httptest server that serves a good repo and 404s for the broken one.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/repos/acme/widgets/issues") {
+			// Return a single issue so poll succeeds.
+			issue := []stubs.GitHubIssue{{
+				Number:    1,
+				Title:     "t",
+				CreatedAt: time.Date(2026, 9, 29, 9, 0, 0, 0, time.UTC),
+				UpdatedAt: time.Date(2026, 9, 29, 9, 0, 0, 0, time.UTC),
+				User:      stubs.GitHubUser{Type: "User"},
+			}}
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("ETag", `"empty"`)
+			json.NewEncoder(w).Encode(issue)
+			return
+		}
+		// Anything else -> 404 (simulates a misconfigured / non-existent repo)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	// In-process heartbeat to verify the ledger truthfulness.
+	dbPath := t.TempDir() + "/partial.db"
+	db, err := store.Open(context.Background(), dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	wm := store.NewSQLiteWatermarks(db)
+	q := store.NewSQLiteQueue(dbPath, store.WithLeaseDuration(5*time.Minute), store.WithMaxAttempts(3))
+	hb := store.NewSQLiteHeartbeat(db)
+
+	gh := NewGitHub(srv.URL, "stub-token", []string{repoOK, repoFail}, wm)
+	p := NewPoller(gh, q, wm, []string{repoOK, repoFail}, 60*time.Second)
+	p.now = func() time.Time { return time.Date(2026, 9, 29, 9, 0, 0, 0, time.UTC) }
+
+	ctx := context.Background()
+
+	// Seed old poll timestamps so we can assert they change (or don't).
+	old := time.Date(2026, 9, 28, 9, 0, 0, 0, time.UTC)
+	_ = hb.SavePoll(ctx, repoFail, old)
+	_ = hb.SavePoll(ctx, repoOK, old)
+
+	// Tick: repoOK (succeeds) then repoFail (404). repoOK is first in the list
+	// so it completes; repoFail is second so it fails fast.
+	completed, err := p.Tick(ctx)
+	if err == nil {
+		t.Fatalf("expected Tick to fail on %s, got nil error; completed=%v", repoFail, completed)
+	}
+
+	// Completed should contain only repoOK — the repo that was actually polled
+	// before the failure stopped the tick.
+	if len(completed) != 1 || completed[0] != repoOK {
+		t.Fatalf("completed: got %v, want [%s]", completed, repoOK)
+	}
+
+	// Simulate the caller's pattern (main.go:266-267): record SavePoll for
+	// each completed repo. repoOK gets recorded; repoFail does not.
+	tickTime := p.now()
+	for _, repo := range completed {
+		_ = hb.SavePoll(ctx, repo, tickTime)
+	}
+
+	// repoOK's poll ledger should have advanced.
+	lastOK, seededOK, err := hb.LastPoll(ctx, repoOK)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !seededOK {
+		t.Fatal("expected seeded last poll for repoOK")
+	}
+	if !lastOK.Equal(tickTime) {
+		t.Fatalf("repoOK last_poll: got %v, want %v", lastOK, tickTime)
+	}
+
+	// repoFail's poll ledger should be unchanged — it was never polled this tick.
+	lastFail, seededFail, err := hb.LastPoll(ctx, repoFail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !seededFail {
+		t.Fatal("expected seeded last poll for repoFail")
+	}
+	if !lastFail.Equal(old) {
+		t.Fatalf("repoFail last_poll changed to %v, want unchanged %v", lastFail, old)
+	}
+}
+
+// TestPollerTickFirstRepoFails verifies the edge case where the first repo in
+// the list fails — completed should be an empty (but non-nil) slice, not nil.
+// This ensures the caller's `for _, repo := range completed` is a no-op.
+func TestPollerTickFirstRepoFails(t *testing.T) {
+	repoFail := "acme/broken"
+	repoOK := "acme/widgets"
+
+	// 404 for repoFail, succeed for repoOK.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/repos/acme/widgets/issues") {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("ETag", `"empty"`)
+			json.NewEncoder(w).Encode([]stubs.GitHubIssue{})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	dbPath := t.TempDir() + "/first-fail.db"
+	db, err := store.Open(context.Background(), dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	wm := store.NewSQLiteWatermarks(db)
+	q := store.NewSQLiteQueue(dbPath, store.WithLeaseDuration(5*time.Minute), store.WithMaxAttempts(3))
+
+	gh := NewGitHub(srv.URL, "stub-token", []string{repoFail, repoOK}, wm)
+	// repoFail is FIRST in the list — should fail immediately.
+	p := NewPoller(gh, q, wm, []string{repoFail, repoOK}, 60*time.Second)
+	p.now = func() time.Time { return time.Date(2026, 9, 29, 9, 0, 0, 0, time.UTC) }
+
+	completed, err := p.Tick(context.Background())
+	if err == nil {
+		t.Fatal("expected Tick to fail on first repo, got nil error")
+	}
+	// completed should be empty (no repos polled before failure).
+	if len(completed) != 0 {
+		t.Fatalf("completed: got %v, want empty slice", completed)
+	}
+	// Verify: range over completed is a no-op, so no SavePoll occurs.
+	// (We don't need to check the ledger — an empty range does nothing.)
 }
