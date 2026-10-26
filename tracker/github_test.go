@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -696,4 +698,77 @@ func TestExtractRepo(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestGetLabelsRealWireShape pins the single-issue GET decode to the real
+// GitHub REST shape — a JSON object, not an array. This test bypasses the
+// in-repo stub and speaks to an httptest server directly, so it exercises
+// the exact wire the adapter will see against real GitHub/GHE (D29,
+// event-contract §6). Without it the stub could drift from the wire again
+// and the label path would keep passing while failing in production.
+func TestGetLabelsRealWireShape(t *testing.T) {
+	repo := "acme/widgets"
+	issue := stubs.GitHubIssue{
+		Number:   412,
+		Title:    "Add caching",
+		Body:     "Need Redis.",
+		User:     stubs.GitHubUser{Type: "User"},
+		HTMLURL:  "https://github.com/acme/widgets/issues/412",
+	}
+	issue.Labels = []stubs.GitHubLabel{stubs.LabelIdleReady, stubs.LabelIdleHotfix}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/acme/widgets/issues/412" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(issue)
+	}))
+	defer srv.Close()
+
+	gh := NewGitHub(srv.URL, "test-token", []string{repo}, store.NewSQLiteWatermarks(nil))
+
+	got, err := gh.getLabels(context.Background(),
+		queue.TrackerRef{Tracker: "github", RepositoryID: repo, ExternalID: "412"})
+	if err != nil {
+		t.Fatalf("getLabels: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("labels: got %v, want 2", got)
+	}
+	if !hasLabel(got, "idle-ready") || !hasLabel(got, "idle-hotfix") {
+		t.Errorf("labels: got %v, want idle-ready and idle-hotfix", got)
+	}
+}
+
+// TestGetLabelsRealWireArrayBody verifies the adapter rejects an array body
+// for the single-issue GET — the old broken behaviour. If getLabels silently
+// decoded an array it would be a stub-only path that fails against real GitHub.
+func TestGetLabelsRealWireArrayBody(t *testing.T) {
+	repo := "acme/widgets"
+	issue := stubs.GitHubIssue{Number: 412, Title: "x", User: stubs.GitHubUser{Type: "User"}}
+	issue.Labels = []stubs.GitHubLabel{stubs.LabelIdleReady}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode([]stubs.GitHubIssue{issue})
+	}))
+	defer srv.Close()
+
+	gh := NewGitHub(srv.URL, "test-token", []string{repo}, store.NewSQLiteWatermarks(nil))
+
+	_, err := gh.getLabels(context.Background(),
+		queue.TrackerRef{Tracker: "github", RepositoryID: repo, ExternalID: "412"})
+	if err == nil {
+		t.Fatal("expected decode error for array body on single-issue GET, got nil")
+	}
+}
+
+func hasLabel(labels []string, name string) bool {
+	for _, l := range labels {
+		if l == name {
+			return true
+		}
+	}
+	return false
 }

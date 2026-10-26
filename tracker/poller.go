@@ -406,24 +406,18 @@ func (g *GitHub) getLabels(ctx context.Context, ref queue.TrackerRef) ([]string,
 		b, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("get labels: %d: %s", resp.StatusCode, string(b))
 	}
-	// The issues endpoint returns a JSON array; pick the one whose number
-	// matches the ref's external id.
-	var issues []githubIssue
-	if err := json.NewDecoder(resp.Body).Decode(&issues); err != nil {
+	// GET /repos/{o}/{r}/issues/{n} returns ONE issue object, not an array
+	// (event-contract §6, D29). Decoding a single object pins the adapter to
+	// the real GitHub REST shape; a 404/410 is a documented no-op below.
+	var issue githubIssue
+	if err := json.NewDecoder(resp.Body).Decode(&issue); err != nil {
 		return nil, fmt.Errorf("get labels: decode: %w", err)
 	}
-	for _, issue := range issues {
-		if fmt.Sprintf("%d", issue.Number) == ref.ExternalID {
-			labels := make([]string, 0, len(issue.Labels))
-			for _, l := range issue.Labels {
-				labels = append(labels, l.Name)
-			}
-			return labels, nil
-		}
+	labels := make([]string, 0, len(issue.Labels))
+	for _, l := range issue.Labels {
+		labels = append(labels, l.Name)
 	}
-	// Issue not found — nothing to remove; return an empty set rather than
-	// an error so a remove on a missing issue is a no-op (idempotent).
-	return nil, nil
+	return labels, nil
 }
 
 // postIssue creates a new issue (TrackerSink.OpenIssue for P3 sweep findings).
