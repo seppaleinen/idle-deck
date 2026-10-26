@@ -12,7 +12,9 @@ Implement the configuration layer for idle-deck per **D34** (env vars + CLI flag
 - `check` command implements operator-surface §5 steps 1, 4, 6 only (steps 2,3,5 deferred – need tracker/harness adapters)
 - **No** YAML/TOML/JSON file parser, no `.env` reader, no secrets file (D34, D36)
 
-**D-refs cited:** D23, D34, D36, D37, D33, D30, D43, D44, D45, D14, D17, D28, D29, D15, D21, D6, D8, D9, D13, D18, D32, D19, D22, D4, D10, D11, D1, D2, D7, D20, D24, D25, D26, D27, D40, D41, D42, D5, D31, D16, D12, D35, D38, D39.
+**D-refs cited:** D23, D34, D36, D37, D33, D30, D43, D44, D45, D14, D17, D28, D29, D15, D21, D6, D8, D9, D13, D18, D32, D19, D22, D4, D10, D11, D1, D2, D7, D20, D24, D25, D26, D27, D40, D41, D42, D49, D31, D16, D12, D35, D38, D39.
+
+> **Supersession note (D42):** idle semantics are carried by **D49** (*idle means reachable AND has capacity*), which amends D31's definition while preserving its mechanism. **D31** (*idle is probed at the harness's `GET /health`, which must report model reachability, not process liveness*) is retained here as the mechanism note — the probe location, reachability-not-liveness, and no-platform-heuristics clauses all survive into D49. **D5** (*idle means idle-deck can reach the model*) is superseded: D5 → D31 → D49. D5's definition is carried forward; its probe location (the inference server directly) is not. See [ADR 0022](../adr/0022-idle-means-reachable-and-has-capacity.md).
 
 ---
 
