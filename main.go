@@ -252,13 +252,19 @@ func runRun(args []string) int {
 				_ = hb.ReleaseRunLock(ctx)
 				return
 			case <-ticker.C:
-				if err := poller.Tick(ctx); err != nil {
+				// Tick returns the repos it actually polled this cycle. The
+				// poll ledger records a "last poll" only for those repos, so a
+				// repo skipped because a preceding repo failed (Tick fails fast
+				// per event-contract §2) does not appear freshly polled
+				// (operator-surface §6, D28).
+				completed, err := poller.Tick(ctx)
+				_ = hb.Beat(ctx, time.Now())
+				for _, repo := range completed {
+					_ = hb.SavePoll(ctx, repo, time.Now())
+				}
+				if err != nil {
 					log.Error("poll tick failed", "err", err)
 					continue
-				}
-				_ = hb.Beat(ctx, time.Now())
-				for _, repo := range repos {
-					_ = hb.SavePoll(ctx, repo, time.Now())
 				}
 				if err := poller.Sweep(ctx); err != nil {
 					log.Error("sweep enqueue failed", "err", err)

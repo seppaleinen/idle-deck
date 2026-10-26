@@ -75,23 +75,39 @@ func NewPoller(gh *GitHub, q queue.Queue, wm store.WatermarkStore, repos []strin
 }
 
 // Tick runs one polling cycle for all repositories.
-func (p *Poller) Tick(ctx context.Context) error {
+//
+// It returns the list of repos that actually completed polling this tick —
+// i.e. those whose pollRepo succeeded AND whose watermark was advanced —
+// along with any error that stopped the cycle. Tick still fails fast on the
+// first repo error (event-contract §2): a repo that errors, and every repo
+// after it in the list, is NOT polled this tick and must NOT appear in the
+// returned slice.
+//
+// The completed list is the single source of truth for the per-repo poll
+// ledger (operator-surface §6): callers record a "last poll" timestamp only
+// for the returned repos, so a repo skipped because a preceding repo failed
+// does not masquerade as freshly polled. On error the slice is nil.
+func (p *Poller) Tick(ctx context.Context) ([]string, error) {
 	tickStart := p.now()
+	var completed []string
 	for _, repo := range p.repos {
 		if err := p.pollRepo(ctx, repo, tickStart); err != nil {
 			// On error, do NOT advance watermark (event-contract §2).
-			return err
+			// Return the repos that completed before the failure so the caller
+			// can record a truthful poll ledger.
+			return completed, err
 		}
 		// Watermark advances to tick start AFTER pagination completes.
 		if err := p.wm.Save(ctx, repo, tickStart); err != nil {
-			return fmt.Errorf("watermark save: %w", err)
+			return completed, fmt.Errorf("watermark save: %w", err)
 		}
+		completed = append(completed, repo)
 	}
 	// Process any dashboard actions queued since last tick.
 	if err := p.ProcessDashboardActions(ctx); err != nil {
-		return fmt.Errorf("process dashboard actions: %w", err)
+		return completed, fmt.Errorf("process dashboard actions: %w", err)
 	}
-	return nil
+	return completed, nil
 }
 
 // Sweep enqueues P3 sweep tasks for configured repositories.
