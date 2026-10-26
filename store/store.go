@@ -56,6 +56,9 @@ CREATE TABLE IF NOT EXISTS attempts (
 	outcome          TEXT NOT NULL DEFAULT '',
 	started_at       INTEGER,
 	finished_at      INTEGER,
+	-- timeout_seconds: the effective timeout for this attempt (D17/D37).
+	-- Copied from tasks.timeout_seconds at claim time: 0 means "use tier
+	-- default" (the server enforces the timeout, not this column).
 	timeout_seconds  INTEGER NOT NULL DEFAULT 0,
 	remote_session_id TEXT,
 	CONSTRAINT unique_task_ordinal UNIQUE (task_id, ordinal)

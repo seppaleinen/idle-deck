@@ -202,19 +202,17 @@ WHERE state = 'running' AND id IN (
 	defer tx.Rollback()
 	var taskID, tier string
 	var created int64
-	var taskTier int
-	var taskTimeout int
-	rankingSQL := queue.TierOrderingSQL()
-	err = tx.QueryRowContext(ctx, fmt.Sprintf(`
+	var taskTier, taskTimeout int
+	err = tx.QueryRowContext(ctx, `
 SELECT id, tier,
-       %s,
+       CASE tier WHEN 'P0' THEN 0 WHEN 'P1' THEN 1 WHEN 'P2' THEN 2 WHEN 'P3' THEN 3 ELSE 99 END,
        created_at,
        timeout_seconds
   FROM tasks
  WHERE state = 'queued'
  ORDER BY %s ASC, created_at ASC, id ASC
  LIMIT 1
-`, rankingSQL, rankingSQL)).Scan(&taskID, &tier, &taskTier, &created, &taskTimeout)
+`).Scan(&taskID, &tier, &taskTier, &created, &taskTimeout)
 	if err == sql.ErrNoRows {
 		tx.Rollback()
 		return queue.Lease{}, queue.ErrNoWork
@@ -241,7 +239,7 @@ SELECT id, tier,
 	_, err = tx.ExecContext(ctx, `
 INSERT INTO attempts (id, task_id, ordinal, outcome, started_at, timeout_seconds, remote_session_id)
 VALUES (?, ?, ?, '', ?, ?, '')`,
-		attemptID, taskID, ordinal, now.UnixNano(), effectiveTimeout)
+		attemptID, taskID, ordinal, now.UnixNano(), taskTimeout)
 	if err != nil {
 		tx.Rollback()
 		return queue.Lease{}, fmt.Errorf("store: attempt insert: %w", err)
