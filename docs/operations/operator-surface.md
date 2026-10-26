@@ -150,8 +150,17 @@ override one value for one run without editing anything.
 | `IDLE_DECK_GITHUB_TOKEN` | Fine-grained PAT for the tracker, Issues read/write. Needs write because D29's label lifecycle writes labels. |
 | `IDLE_DECK_REPOS` | Comma-separated `owner/repo` list. **This list is the allowlist** (D30), checked again at ingestion (I1). |
 | `IDLE_DECK_HARNESS_URL` | Base URL of the remote execution service. |
-| `IDLE_DECK_HARNESS_TOKEN` | Bearer token for that service (D27). |
+| `IDLE_DECK_HARNESS_TOKEN` | Bearer token for that service (D27). **Required on both sides of the harness seam** — the remote execution service must be configured with the same value under `IDLE_DECK_REMOTE_HTTP_TOKEN` (see §4's remote table and remote-contract §1). Both are required; setting them to different values makes every run a 401 → `non_retryable_failure` → immediate escalation of everything. |
 | `IDLE_DECK_REMOTE_ROLE_TO_MODEL` | **Required on the remote.** JSON mapping of role → model name, e.g. `'{"plan":"<model>","do":"<model>","sweep":"<model>"}'`. The remote ships no default model mapping (D6/D40: idle-deck never names a model, provider, or vendor; D46: the agent model is operator config, not a build-time choice) — if this is unset the remote **refuses to start** with a clear error naming the variable. It is listed here rather than §4's remote table because it is a hard failure, not a default. |
+
+> **The bearer token pair (issue #41).** The harness seam carries one credential across two
+> processes, and it has two env var names with asymmetric required-ness:
+> `IDLE_DECK_HARNESS_TOKEN` (required on idle-deck) and `IDLE_DECK_REMOTE_HTTP_TOKEN`
+> (previously optional on the remote — it warned and ran open). The remote now **fails fast**
+> when `IDLE_DECK_REMOTE_HTTP_TOKEN` is empty, matching idle-deck's required-ness. There is no
+> documented empty-token opt-out: an operator who wants an unauthenticated local dev server
+> should point idle-deck at a separate URL with a throwaway token, not at the production remote
+> with an empty credential. See remote-contract §1.
 
 ### Defaults — every one of these can be left alone
 
@@ -208,18 +217,31 @@ enforces (D43), not something the prompt can grant.
 API base is exactly what GitHub Enterprise requires, so it earns its place on its own merits; §9 then
 reuses it for free.
 
-### Remote execution service — agent CLI selection (D46)
+### Remote execution service — configuration (D46)
 
 The harness (`idle-deck-remote`) is configured with `IDLE_DECK_REMOTE_*` env
-vars. The most operator-visible of these are the ACP agent launch recipe.
-The agent CLI is operator config, not a build-time choice (D46): the binary
+vars. The agent CLI is operator config, not a build-time choice (D46): the binary
 baked into the image is a default, the operator picks the agent at deploy
 time. `IDLE_DECK_REMOTE_ROLE_TO_MODEL` is **required** (see §4) — the remote
 ships no model mapping, so the operator names the model at deploy time rather
 than the wrapper naming one by default (D6/D40).
 
+**Required — the remote refuses to start without these:**
+
+| Variable | Meaning |
+|---|---|
+| `IDLE_DECK_REMOTE_GIT_TOKEN` | Repo-scoped PAT for git operations (push, PR creation). Needs `Contents: Read and write` + `Metadata: Read-only`. |
+| `IDLE_DECK_REMOTE_HTTP_TOKEN` | **Bearer token for the HTTP server.** Required on both sides of the harness seam (issue #41): it must match `IDLE_DECK_HARNESS_TOKEN` on the idle-deck side. Both are required; setting them to different values makes every run a 401 → `non_retryable_failure` → immediate escalation of everything. See remote-contract §1. |
+| `IDLE_DECK_REMOTE_ROLE_TO_MODEL` | JSON mapping of role → model name, e.g. `'{"plan":"<model>","do":"<model>","sweep":"<model>"}'`. The remote ships no default model mapping (D6/D40: idle-deck never names a model, provider, or vendor; D46: the agent model is operator config, not a build-time choice) — if this is unset the remote **refuses to start** with a clear error naming the variable. |
+
+**Optional — all have safe defaults:**
+
 | Variable | Default | Meaning |
 |---|---|---|
+| `IDLE_DECK_REMOTE_BARE_DIR` | `/tmp/idle-deck-bare` | Directory for bare repo cache. |
+| `IDLE_DECK_REMOTE_BASE_DIR` | `/tmp/idle-deck-work` | Directory for worktrees. |
+| `IDLE_DECK_REMOTE_LISTEN_ADDR` | `:8080` | HTTP listen address. |
+| `IDLE_DECK_REMOTE_WORKTREE_TTL` | `24h` | Worktree GC TTL; `0` = keep forever. |
 | `IDLE_DECK_REMOTE_AGENT_BIN` | `opencode` | ACP agent binary on PATH. Any ACP agent — `opencode`, `pi`, `goose`, or claude/codex/gemini ACP adapters — drops in. |
 | `IDLE_DECK_REMOTE_AGENT_ARGS` | `["acp"]` | JSON array of args passed to the agent CLI. |
 | `IDLE_DECK_REMOTE_AGENT_ENV` | *unset* | JSON array of extra env strings (e.g. `["FOO=bar","BAZ=qux"]`) layered on top of the inherited environment. Use this to pass provider credentials the agent needs without writing env files (D36). |
