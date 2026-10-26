@@ -573,9 +573,14 @@ func (s *Server) handleActionPoll(w http.ResponseWriter, r *http.Request) {
 	}
 	actionID := uuid.New().String()
 	now := time.Now().UnixNano()
-	_, err := s.db.ExecContext(r.Context(),
+	payloadBytes, err := json.Marshal(actionPollPayload{Repo: p.Repo})
+	if err != nil {
+		s.respondError(w, r, http.StatusInternalServerError, "marshal payload: "+err.Error())
+		return
+	}
+	_, err = s.db.ExecContext(r.Context(),
 		`INSERT INTO dashboard_actions (id, kind, payload, status, created_at) VALUES (?, 'poll', ?, 'pending', ?)`,
-		actionID, `{"repo":"`+p.Repo+`"}`, now)
+		actionID, payloadBytes, now)
 	if err != nil {
 		s.respondError(w, r, http.StatusInternalServerError, "insert action: "+err.Error())
 		return
@@ -604,9 +609,14 @@ func (s *Server) handleActionCancel(w http.ResponseWriter, r *http.Request) {
 	}
 	actionID := uuid.New().String()
 	now := time.Now().UnixNano()
-	_, err := s.db.ExecContext(r.Context(),
+	payloadBytes, err := json.Marshal(actionCancelPayload{TaskID: p.TaskID})
+	if err != nil {
+		s.respondError(w, r, http.StatusInternalServerError, "marshal payload: "+err.Error())
+		return
+	}
+	_, err = s.db.ExecContext(r.Context(),
 		`INSERT INTO dashboard_actions (id, kind, payload, status, created_at) VALUES (?, 'cancel', ?, 'pending', ?)`,
-		actionID, `{"task_id":"`+p.TaskID+`"}`, now)
+		actionID, payloadBytes, now)
 	if err != nil {
 		s.respondError(w, r, http.StatusInternalServerError, "insert action: "+err.Error())
 		return
@@ -919,9 +929,14 @@ func (s *Server) handleActionRetry(w http.ResponseWriter, r *http.Request) {
 	}
 	actionID := uuid.New().String()
 	now := time.Now().UnixNano()
-	_, err := s.db.ExecContext(r.Context(),
+	payloadBytes, err := json.Marshal(actionRetryPayload{TaskID: p.TaskID})
+	if err != nil {
+		s.respondError(w, r, http.StatusInternalServerError, "marshal payload: "+err.Error())
+		return
+	}
+	_, err = s.db.ExecContext(r.Context(),
 		`INSERT INTO dashboard_actions (id, kind, payload, status, created_at) VALUES (?, 'retry', ?, 'pending', ?)`,
-		actionID, `{"task_id":"`+p.TaskID+`"}`, now)
+		actionID, payloadBytes, now)
 	if err != nil {
 		s.respondError(w, r, http.StatusInternalServerError, "insert action: "+err.Error())
 		return

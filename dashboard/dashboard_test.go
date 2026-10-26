@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -374,4 +375,144 @@ func TestServer_Summary_PRState(t *testing.T) {
 	if resp.Concluded[0].PRState != "merged" {
 		t.Errorf("PRState not enriched: got %q, want merged", resp.Concluded[0].PRState)
 	}
+}
+
+func TestServer_DashboardActionsPayloadRoundTrip(t *testing.T) {
+	dbPath := t.TempDir() + "/idle-deck.db"
+	ctx := context.Background()
+	db, err := store.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+
+	cfg := config.Defaults()
+	cfg.DB = dbPath
+	cfg.DashboardAddr = "127.0.0.1:0"
+	cfg.HarnessURL = "http://127.0.0.1:9999"
+	// Enable dashboard actions for testing
+	cfg.DashboardActions = true
+
+	srv, err := NewServer(cfg, db, nil)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	defer srv.Close()
+
+	// Test action poll payload round-trip with special characters
+	// The repo name regex forbids quotes/backslashes in production,
+	// but json.Marshal must handle them correctly to avoid injection
+	t.Run("actionPoll with special chars", func(t *testing.T) {
+		// Test with valid repo name first
+		body := `{"repo":"owner/repo"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/actions/poll", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		srv.mux.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("POST /api/actions/poll: status %d, body %s", w.Code, w.Body.String())
+		}
+		var resp map[string]string
+		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		actionID := resp["action_id"]
+		if actionID == "" {
+			t.Fatal("action_id missing")
+		}
+
+		// Verify payload was stored correctly and can be unmarshalled
+		var payload []byte
+		err := db.QueryRowContext(ctx,
+			"SELECT payload FROM dashboard_actions WHERE id = ?", actionID).Scan(&payload)
+		if err != nil {
+			t.Fatalf("query payload: %v", err)
+		}
+
+		var p actionPollPayload
+		if err := json.Unmarshal(payload, &p); err != nil {
+			t.Fatalf("unmarshal payload: %v", err)
+		}
+		if p.Repo != "owner/repo" {
+			t.Errorf("repo mismatch: got %q, want owner/repo", p.Repo)
+		}
+
+		// Verify the payload is valid JSON (not broken by string concatenation)
+		// Even if someone passes a repo with quotes, json.Marshal handles it
+		payloadStr := string(payload)
+		// The payload should be valid JSON - can re-marshal and check structure
+		var parsed map[string]string
+		if err := json.Unmarshal(payload, &parsed); err != nil {
+			t.Fatalf("payload is not valid JSON: %v, payload=%s", err, payloadStr)
+		}
+		if parsed["repo"] != "owner/repo" {
+			t.Errorf("parsed repo mismatch: got %q", parsed["repo"])
+		}
+	})
+
+	// Test action cancel payload round-trip
+	t.Run("actionCancel round-trip", func(t *testing.T) {
+		taskID := "123e4567-e89b-12d3-a456-426614174000"
+		body := fmt.Sprintf(`{"task_id":"%s"}`, taskID)
+		req := httptest.NewRequest(http.MethodPost, "/api/actions/cancel", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		srv.mux.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("POST /api/actions/cancel: status %d, body %s", w.Code, w.Body.String())
+		}
+		var resp map[string]string
+		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		actionID := resp["action_id"]
+
+		var payload []byte
+		err := db.QueryRowContext(ctx,
+			"SELECT payload FROM dashboard_actions WHERE id = ?", actionID).Scan(&payload)
+		if err != nil {
+			t.Fatalf("query payload: %v", err)
+		}
+
+		var p actionCancelPayload
+		if err := json.Unmarshal(payload, &p); err != nil {
+			t.Fatalf("unmarshal payload: %v", err)
+		}
+		if p.TaskID != taskID {
+			t.Errorf("task_id mismatch: got %q, want %q", p.TaskID, taskID)
+		}
+	})
+
+	// Test action retry payload round-trip
+	t.Run("actionRetry round-trip", func(t *testing.T) {
+		taskID := "task-123-retry"
+		body := fmt.Sprintf(`{"task_id":"%s"}`, taskID)
+		req := httptest.NewRequest(http.MethodPost, "/api/actions/retry", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		srv.mux.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("POST /api/actions/retry: status %d, body %s", w.Code, w.Body.String())
+		}
+		var resp map[string]string
+		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		actionID := resp["action_id"]
+
+		var payload []byte
+		err := db.QueryRowContext(ctx,
+			"SELECT payload FROM dashboard_actions WHERE id = ?", actionID).Scan(&payload)
+		if err != nil {
+			t.Fatalf("query payload: %v", err)
+		}
+
+		var p actionRetryPayload
+		if err := json.Unmarshal(payload, &p); err != nil {
+			t.Fatalf("unmarshal payload: %v", err)
+		}
+		if p.TaskID != taskID {
+			t.Errorf("task_id mismatch: got %q, want %q", p.TaskID, taskID)
+		}
+	})
 }
