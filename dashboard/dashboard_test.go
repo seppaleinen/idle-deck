@@ -403,8 +403,16 @@ func TestServer_DashboardActionsPayloadRoundTrip(t *testing.T) {
 	// The repo name regex forbids quotes/backslashes in production,
 	// but json.Marshal must handle them correctly to avoid injection
 	t.Run("actionPoll with special chars", func(t *testing.T) {
-		// Test with valid repo name first
-		body := `{"repo":"owner/repo"}`
+		// Test with a repo name containing a double-quote character.
+		// This would break string concatenation (`{"repo":"`+p.Repo+`"}`)
+		// because the quote terminates the string literal early, producing
+		// invalid JSON. json.Marshal escapes it correctly, so the stored
+		// payload round-trips. The repo name is unvalidated at the handler
+		// boundary; this test pins that json.Marshal is the invariant.
+		repo := `owner/"weird"/repo`
+		// Request body is valid JSON (quotes escaped); the *decoded* repo
+		// value contains a literal double quote.
+		body := `{"repo":"owner/\"weird\"/repo"}`
 		req := httptest.NewRequest(http.MethodPost, "/api/actions/poll", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
@@ -431,22 +439,19 @@ func TestServer_DashboardActionsPayloadRoundTrip(t *testing.T) {
 
 		var p actionPollPayload
 		if err := json.Unmarshal(payload, &p); err != nil {
-			t.Fatalf("unmarshal payload: %v", err)
+			t.Fatalf("unmarshal payload: %v, payload=%s", err, string(payload))
 		}
-		if p.Repo != "owner/repo" {
-			t.Errorf("repo mismatch: got %q, want owner/repo", p.Repo)
+		if p.Repo != repo {
+			t.Errorf("repo mismatch: got %q, want %q", p.Repo, repo)
 		}
 
 		// Verify the payload is valid JSON (not broken by string concatenation)
-		// Even if someone passes a repo with quotes, json.Marshal handles it
-		payloadStr := string(payload)
-		// The payload should be valid JSON - can re-marshal and check structure
 		var parsed map[string]string
 		if err := json.Unmarshal(payload, &parsed); err != nil {
-			t.Fatalf("payload is not valid JSON: %v, payload=%s", err, payloadStr)
+			t.Fatalf("payload is not valid JSON: %v, payload=%s", err, string(payload))
 		}
-		if parsed["repo"] != "owner/repo" {
-			t.Errorf("parsed repo mismatch: got %q", parsed["repo"])
+		if parsed["repo"] != repo {
+			t.Errorf("parsed repo mismatch: got %q, want %q", parsed["repo"], repo)
 		}
 	})
 
