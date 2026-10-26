@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"sync"
 	"testing"
 	"time"
 
@@ -382,4 +383,93 @@ func TestDashboardVisitsStore(t *testing.T) {
 	if count != 1 {
 		t.Errorf("expected 1 dashboard_visits row, got %d", count)
 	}
+}
+
+// TestEventsFanOut verifies that concurrent Events callers each receive
+// every broadcast event (acceptance criterion 1 from H3 fix).
+func TestEventsFanOut(t *testing.T) {
+	s := newTestStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Dequeue a P2 task so an active lease exists (required for Enqueue to broadcast).
+	if err := s.Enqueue(ctx, makeTask(t, "low", queue.TierP2, "lowkey")); err != nil {
+		t.Fatal(err)
+	}
+	lease, err := s.Dequeue(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Two subscribers.
+	ev1, err := s.Events(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev2, err := s.Events(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Enqueue a P0 task — both subscribers must observe it.
+	if err := s.Enqueue(ctx, makeTask(t, "high", queue.TierP0, "highkey")); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	seen1, seen2 := false, false
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for ev := range ev1 {
+			if ev.Tier == queue.TierP0 {
+				seen1 = true
+				return
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for ev := range ev2 {
+			if ev.Tier == queue.TierP0 {
+				seen2 = true
+				return
+			}
+		}
+	}()
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for fan-out events")
+	}
+
+	if !seen1 {
+		t.Error("subscriber 1 did not observe the P0 event")
+	}
+	if !seen2 {
+		t.Error("subscriber 2 did not observe the P0 event")
+	}
+
+	// Cleanup: cancelling ctx must release both subscribers.
+	cancel()
+
+	// Wait for subscriber goroutines to exit and close channels.
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify no subscriber growth: after cancel, the subscriber map is empty.
+	s.subsMu.Lock()
+	n := len(s.subscribers)
+	s.subsMu.Unlock()
+	if n != 0 {
+		t.Errorf("expected 0 subscribers after ctx cancel, got %d", n)
+	}
+
+	s.Ack(ctx, lease, lease.AttemptID)
 }

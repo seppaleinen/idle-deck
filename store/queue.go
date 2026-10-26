@@ -29,9 +29,14 @@ type SQLiteQueue struct {
 	maxA    int
 	mu      sync.Mutex
 	active  *activeLease
-	events  chan queue.QueueEvent
 	notify  chan struct{}
 	notifyM sync.Mutex
+	// subscribers is a map of per-subscription channels for fan-out.
+	// Each call to Events(ctx) creates a new channel, registers it here,
+	// and removes it on context cancellation.
+	// Protected by subsMu.
+	subscribers map[chan queue.QueueEvent]struct{}
+	subsMu      sync.Mutex
 }
 
 type activeLease struct {
@@ -41,10 +46,10 @@ type activeLease struct {
 
 func NewSQLiteQueue(dbPath string, opts ...func(*SQLiteQueue)) *SQLiteQueue {
 	q := &SQLiteQueue{
-		now:    defaultNow,
-		lease:  30 * time.Minute,
-		events: make(chan queue.QueueEvent, 1),
-		notify: make(chan struct{}, 1),
+		now:         defaultNow,
+		lease:       30 * time.Minute,
+		notify:      make(chan struct{}, 1),
+		subscribers: make(map[chan queue.QueueEvent]struct{}),
 	}
 	for _, opt := range opts {
 		opt(q)
@@ -64,6 +69,21 @@ func WithLeaseDuration(d time.Duration) func(*SQLiteQueue) {
 	return func(q *SQLiteQueue) { q.lease = d }
 }
 func WithMaxAttempts(n int) func(*SQLiteQueue) { return func(q *SQLiteQueue) { q.maxA = n } }
+
+// broadcastEvent fans out an event to all registered subscriber channels.
+// The send is non-blocking: if a subscriber's channel is full, the event is
+// dropped for that subscriber (same semantics as the former 1-element buffer,
+// but per-subscriber). This preserves the "never block Enqueue" invariant.
+func (q *SQLiteQueue) broadcastEvent(ev queue.QueueEvent) {
+	q.subsMu.Lock()
+	defer q.subsMu.Unlock()
+	for ch := range q.subscribers {
+		select {
+		case ch <- ev:
+		default:
+		}
+	}
+}
 
 func (q *SQLiteQueue) Enqueue(ctx context.Context, task queue.Task) error {
 	if task.ID == "" {
@@ -108,12 +128,8 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)`
 	al := q.active
 	evTier := task.Tier
 	q.mu.Unlock()
-	if al != nil && queue.TierRank(evTier) < queue.TierRank(al.tier) {
-		select {
-		case q.events <- queue.QueueEvent{Tier: evTier}:
-		default:
-		}
-	}
+	if al != nil && tierRank(evTier) < tierRank(al.tier) {
+		q.broadcastEvent(queue.QueueEvent{Tier: evTier})	}
 	q.notifyM.Lock()
 	notify := q.notify
 	q.notifyM.Unlock()
@@ -313,10 +329,6 @@ WHERE id = ? AND task_id = ? AND outcome = ''
 	case notify <- struct{}{}:
 	default:
 	}
-	select {
-	case <-q.events:
-	default:
-	}
 	return nil
 }
 
@@ -382,15 +394,24 @@ WHERE id = ? AND task_id = ? AND outcome = ''
 	case notify <- struct{}{}:
 	default:
 	}
-	select {
-	case <-q.events:
-	default:
-	}
 	return nil
 }
 
 func (q *SQLiteQueue) Events(ctx context.Context) (<-chan queue.QueueEvent, error) {
-	return q.events, nil
+	ch := make(chan queue.QueueEvent, 16)
+	q.subsMu.Lock()
+	q.subscribers[ch] = struct{}{}
+	q.subsMu.Unlock()
+	// Unregister and close the channel when the caller's context is done.
+	// This prevents unbounded subscriber growth on churn.
+	go func() {
+		<-ctx.Done()
+		q.subsMu.Lock()
+		delete(q.subscribers, ch)
+		q.subsMu.Unlock()
+		close(ch)
+	}()
+	return ch, nil
 }
 
 // DB returns the underlying *sql.DB handle. It is used by main.go to construct
@@ -486,10 +507,6 @@ func (q *SQLiteQueue) CancelTask(ctx context.Context, taskID string) error {
 	q.notifyM.Unlock()
 	select {
 	case notify <- struct{}{}:
-	default:
-	}
-	select {
-	case <-q.events:
 	default:
 	}
 	return nil
