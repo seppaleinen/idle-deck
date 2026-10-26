@@ -15,56 +15,7 @@ import (
 	"github.com/seppaleinen/idle-deck/queue"
 )
 
-// tierRank returns a numeric rank for a task tier; lower is higher priority.
-// P0=0, P1=1, P2=2, P3=3. Unknown tiers get the lowest priority (99).
-func tierRank(t queue.TaskTier) int {
-	switch t {
-	case queue.TierP0:
-		return 0
-	case queue.TierP1:
-		return 1
-	case queue.TierP2:
-		return 2
-	case queue.TierP3:
-		return 3
-	default:
-		return 99
-	}
-}
 
-// defaultTimeoutForTier returns the tier default timeout per D37.
-// P0=1800s, P1=900s, P2=10800s, P3=3600s.
-func defaultTimeoutForTier(tier queue.TaskTier) time.Duration {
-	switch tier {
-	case queue.TierP0:
-		return 1800 * time.Second
-	case queue.TierP1:
-		return 900 * time.Second
-	case queue.TierP2:
-		return 10800 * time.Second
-	case queue.TierP3:
-		return 3600 * time.Second
-	default:
-		return 0
-	}
-}
-
-// defaultBudgetForTier returns the tier default budget per D37.
-// P0=50000, P1=5000, P2=100000, P3=20000.
-func defaultBudgetForTier(tier queue.TaskTier) int {
-	switch tier {
-	case queue.TierP0:
-		return 50000
-	case queue.TierP1:
-		return 5000
-	case queue.TierP2:
-		return 100000
-	case queue.TierP3:
-		return 20000
-	default:
-		return 0
-	}
-}
 
 // Queue is the local interface the worker depends on. The concrete adapter
 // (store.SQLiteQueue) satisfies it structurally. Defined locally so the
@@ -313,12 +264,12 @@ func (w *Worker) buildRunRequest(task queue.Task, lease queue.Lease) harness.Run
 
 	timeout := time.Duration(task.TimeoutSeconds) * time.Second
 	if timeout <= 0 {
-		timeout = defaultTimeoutForTier(task.Tier)
+		timeout = time.Duration(queue.DefaultTimeoutForTier(task.Tier)) * time.Second
 	}
 
 	budget := task.Budget
 	if budget <= 0 {
-		budget = defaultBudgetForTier(task.Tier)
+		budget = queue.DefaultBudgetForTier(task.Tier)
 	}
 
 	return harness.RunRequest{
@@ -408,7 +359,7 @@ drain:
 		}
 	}
 
-	leaseTierRank := tierRank(lease.Tier)
+	leaseTierRank := queue.TierRank(lease.Tier)
 	for {
 		select {
 		case <-ctx.Done():
@@ -425,7 +376,7 @@ drain:
 		case err := <-errCh:
 			return harness.RunResult{}, false, err
 		case ev := <-events:
-			if tierRank(ev.Tier) < leaseTierRank {
+			if queue.TierRank(ev.Tier) < leaseTierRank {
 				// Preemption (D16): higher-tier event arrived.
 				w.log.Info("worker: preempting run",
 					"task_id", lease.TaskID,
