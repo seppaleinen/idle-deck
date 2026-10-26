@@ -213,7 +213,7 @@ func (w *WorkspaceManager) OnSuccess(worktree Workspace, ws Workspace, attemptID
 	if pr == nil {
 		pr = &ghPRCreator{token: w.GitHubToken}
 	}
-	owner, repo, err := parseOwnerRepo(worktree.RepoURL)
+	_, owner, repo, err := parseOwnerRepo(worktree.RepoURL)
 	if err != nil {
 		return Artifact{}, err
 	}
@@ -288,46 +288,57 @@ func (w *WorkspaceManager) OnFailure(worktree Workspace, ws Workspace, attemptID
 	}, nil
 }
 
-// parseOwnerRepo extracts owner/repo from an HTTPS or SSH remote URL.
+// parseOwnerRepo extracts host/owner/repo from an HTTPS or SSH remote URL.
 // For local filesystem paths (used in tests) it returns the path as-is,
 // so the caller can build a file:// URL rather than a GitHub URL.
-func parseOwnerRepo(rawURL string) (string, string, error) {
+func parseOwnerRepo(rawURL string) (string, string, string, error) {
 	if strings.HasPrefix(rawURL, "/") {
-		return "local", strings.TrimSuffix(strings.TrimSuffix(rawURL, "/"), "/"), nil
+		return "", "local", strings.TrimSuffix(strings.TrimSuffix(rawURL, "/"), "/"), nil
 	}
 	if strings.HasPrefix(rawURL, "https://") {
 		withoutPrefix := strings.TrimPrefix(rawURL, "https://")
 		withoutPrefix = strings.TrimSuffix(withoutPrefix, ".git")
-		parts := strings.SplitN(withoutPrefix, "/", 2)
-		if len(parts) != 2 {
-			return "", "", fmt.Errorf("invalid remote URL: %s", rawURL)
+		// Split off the host, then owner/repo.
+		hostAndPath := strings.SplitN(withoutPrefix, "/", 2)
+		if len(hostAndPath) != 2 {
+			return "", "", "", fmt.Errorf("invalid remote URL: %s", rawURL)
 		}
-		return parts[0], parts[1], nil
+		parts := strings.SplitN(hostAndPath[1], "/", 2)
+		if len(parts) != 2 {
+			return "", "", "", fmt.Errorf("invalid remote URL: %s", rawURL)
+		}
+		return hostAndPath[0], parts[0], parts[1], nil
 	}
 	if strings.HasPrefix(rawURL, "git@") {
 		// git@github.com:owner/repo.git
 		withoutPrefix := strings.TrimPrefix(rawURL, "git@")
-		withoutPrefix = strings.TrimSuffix(withoutPrefix, ":")
-		withoutPrefix = strings.TrimSuffix(withoutPrefix, ".git")
-		parts := strings.SplitN(withoutPrefix, "/", 2)
-		if len(parts) != 2 {
-			return "", "", fmt.Errorf("invalid SSH remote URL: %s", rawURL)
+		// Split on ":" to get host and owner/repo
+		hostAndPath := strings.SplitN(withoutPrefix, ":", 2)
+		if len(hostAndPath) != 2 {
+			return "", "", "", fmt.Errorf("invalid SSH remote URL: %s", rawURL)
 		}
-		return parts[0], parts[1], nil
+		host := hostAndPath[0]
+		path := strings.TrimSuffix(hostAndPath[1], ".git")
+		parts := strings.SplitN(path, "/", 2)
+		if len(parts) != 2 {
+			return "", "", "", fmt.Errorf("invalid SSH remote URL: %s", rawURL)
+		}
+		return host, parts[0], parts[1], nil
 	}
-	return "", "", fmt.Errorf("unsupported protocol in remote URL: %s", rawURL)
+	return "", "", "", fmt.Errorf("unsupported protocol in remote URL: %s", rawURL)
 }
 
 // webBranchURL converts a remote URL into a URL for the branch.
 // For a GitHub remote this is https://github.com/owner/repo/tree/<branch>;
+// for a GitHub Enterprise remote this is https://git.acme.com/owner/repo/tree/<branch>;
 // for a local path it is file://<path>/tree/<branch>.
 func webBranchURL(rawURL, branch string) (string, error) {
-	owner, repo, err := parseOwnerRepo(rawURL)
+	host, owner, repo, err := parseOwnerRepo(rawURL)
 	if err != nil {
 		return "", err
 	}
 	if strings.HasPrefix(rawURL, "/") {
 		return "file://" + repo + "/tree/" + branch, nil
 	}
-	return fmt.Sprintf("https://github.com/%s/%s/tree/%s", owner, repo, branch), nil
+	return fmt.Sprintf("https://%s/%s/%s/tree/%s", host, owner, repo, branch), nil
 }
