@@ -367,6 +367,40 @@ func TestTokenURL(t *testing.T) {
 	}
 }
 
+// webBranchURL tests for GHE-correct branch artifact URIs (issue #40).
+// The host is derived from the upstream URL, not hardcoded to github.com.
+func TestWebBranchURL_GHE(t *testing.T) {
+	cases := []struct {
+		url       string
+		branch    string
+		want      string
+		wantHost  string // expected host in the URL
+	}{
+		// GitHub (default behavior unchanged)
+		{"https://github.com/acme/widgets.git", "feature/abc123", "https://github.com/acme/widgets/tree/feature/abc123", "github.com"},
+		// GitHub Enterprise
+		{"https://git.acme.com/o/r.git", "debug/attempt-1", "https://git.acme.com/o/r/tree/debug/attempt-1", "git.acme.com"},
+		// HTTPS without .git suffix
+		{"https://github.com/acme/widgets", "feature/xyz", "https://github.com/acme/widgets/tree/feature/xyz", "github.com"},
+		// Local path (file:// behaviour unchanged)
+		{"/tmp/local/repo", "debug/123", "file:///tmp/local/repo/tree/debug/123", ""},
+	}
+	for _, c := range cases {
+		got, err := webBranchURL(c.url, c.branch)
+		if err != nil {
+			t.Errorf("webBranchURL(%q, %q): unexpected error: %v", c.url, c.branch, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("webBranchURL(%q, %q) = %q, want %q", c.url, c.branch, got, c.want)
+		}
+		// Additional check: host present in URL
+		if c.wantHost != "" && !strings.Contains(got, "https://"+c.wantHost) {
+			t.Errorf("webBranchURL(%q, %q) = %q, expected host %q", c.url, c.branch, got, c.wantHost)
+		}
+	}
+}
+
 // PushToUpstream pushes the local branch to the given upstream URL. After a
 // successful push the branch exists in the upstream — the end-to-end proof
 // that the push path (including its auth URL) works.
