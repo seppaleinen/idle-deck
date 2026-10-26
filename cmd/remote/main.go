@@ -64,9 +64,7 @@ func main() {
 	}
 	httpToken := os.Getenv("IDLE_DECK_REMOTE_HTTP_TOKEN")
 	if httpToken == "" {
-		// For local dev, allow empty? but we require a token to match idle-deck.
-		// We'll allow empty but warn.
-		log.Print("WARN: IDLE_DECK_REMOTE_HTTP_TOKEN is empty; server will not enforce auth")
+		log.Fatal("IDLE_DECK_REMOTE_HTTP_TOKEN is required: it must match IDLE_DECK_HARNESS_TOKEN on the idle-deck side (D27, D36). Both are required; setting them to different values makes every run a 401.")
 	}
 	// RoleToModel is operator config, not a build-time choice (D46). The
 	// default is nil (D6/D40: idle-deck never names a model, provider, or

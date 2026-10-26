@@ -56,6 +56,13 @@ Everything else in this document follows from that single fact:
   (names belong to [Install, run, configure #11](https://github.com/seppaleinen/idle-deck/issues/11)).
 - **Client → server auth:** `Authorization: Bearer <token>` on every request. The token is
   operator-issued, never logged, never committed (D23).
+  - **The credential is one env var pair, required on both sides:**
+    - `IDLE_DECK_HARNESS_TOKEN` — idle-deck side (coordinator)
+    - `IDLE_DECK_REMOTE_HTTP_TOKEN` — remote side (execution service)
+  - Both are required; the remote refuses to start without `IDLE_DECK_REMOTE_HTTP_TOKEN`,
+    and idle-deck refuses to start without `IDLE_DECK_HARNESS_TOKEN` (D36).
+  - They **must hold the same value**. Setting them to different values makes every run a 401
+    → `non_retryable_failure` → immediate escalation of everything (§7).
 - **Server → GitHub auth:** the remote holds its own **repo-scoped GitHub token**, configured by the
   operator. It is the remote's secret, not idle-deck's.
 - **No inbound calls.** The remote never calls back into idle-deck. Every interaction is
