@@ -18,7 +18,7 @@ while IFS= read -r -d '' file; do
     if [[ "$file" == *"$QUEUE_DIR"* ]]; then
         continue
     fi
-    # Skip test files for tierRank to allow test stubs
+    # Skip test files for tierRank to allow test stubs that call queue.TierRank
     if [[ "$file" == *"_test.go" ]]; then
         continue
     fi
