@@ -18,11 +18,14 @@ type stubQueue struct {
 	tasks        map[string]queue.Task
 	attempts     map[string][]queueAttempt
 	leases       map[string]queue.Lease
-	events       chan queue.QueueEvent
+	active       *queue.Lease
 	enqueued     []queue.Task
 	maxAttempts  int
 	nextOrdinal  int
 	dequeueTimes []time.Time
+	// subscribers for fan-out (H3 fix)
+	subscribers map[chan queue.QueueEvent]struct{}
+	subsMu      sync.Mutex
 }
 
 type queueAttempt struct {
@@ -36,17 +39,35 @@ func newStubQueue(t *testing.T) *stubQueue {
 		tasks:       make(map[string]queue.Task),
 		attempts:    make(map[string][]queueAttempt),
 		leases:      make(map[string]queue.Lease),
-		events:      make(chan queue.QueueEvent, 10),
 		maxAttempts: 3, // mirrors store.NewSQLiteQueue(dbPath, store.WithMaxAttempts(3))
+		subscribers: make(map[chan queue.QueueEvent]struct{}),
 	}
 }
 
 func (q *stubQueue) Enqueue(ctx context.Context, task queue.Task) error {
 	q.mu.Lock()
-	defer q.mu.Unlock()
 	q.enqueued = append(q.enqueued, task)
 	q.tasks[task.ID] = task
+	// Broadcast preemption event if a lower-tier task is running.
+	active := q.active
+	evTier := task.Tier
+	q.mu.Unlock()
+	if active != nil && q.tierRank(evTier) < q.tierRank(active.Tier) {
+		q.broadcastLocked(queue.QueueEvent{Tier: evTier})
+	}
 	return nil
+}
+
+// broadcastLocked fans out an event to all subscriber channels (non-blocking).
+func (q *stubQueue) broadcastLocked(ev queue.QueueEvent) {
+	q.subsMu.Lock()
+	defer q.subsMu.Unlock()
+	for ch := range q.subscribers {
+		select {
+		case ch <- ev:
+		default:
+		}
+	}
 }
 
 // tierRank returns a numeric rank for a task tier; lower is higher priority.
@@ -96,6 +117,10 @@ func (q *stubQueue) Dequeue(ctx context.Context) (queue.Lease, error) {
 			}
 			q.leases[bestID] = lease
 			q.dequeueTimes = append(q.dequeueTimes, time.Now())
+			// Track the active lease so Enqueue can broadcast preemption
+			// events (mirrors store.SQLiteQueue.tryClaim setting q.active).
+			act := lease
+			q.active = &act
 			q.mu.Unlock()
 			return lease, nil
 		}
@@ -143,6 +168,10 @@ func (q *stubQueue) Ack(ctx context.Context, lease queue.Lease, attemptID string
 	task.State = queue.StateSucceeded
 	q.tasks[lease.TaskID] = task
 	delete(q.leases, lease.TaskID)
+	// Clear active lease (mirrors store.SQLiteQueue.Ack)
+	if q.active != nil && q.active.TaskID == lease.TaskID {
+		q.active = nil
+	}
 	return nil
 }
 
@@ -185,6 +214,10 @@ func (q *stubQueue) Nack(ctx context.Context, lease queue.Lease, attemptID strin
 	}
 	q.tasks[lease.TaskID] = task
 	delete(q.leases, lease.TaskID)
+	// Clear active lease (mirrors store.SQLiteQueue.Nack)
+	if q.active != nil && q.active.TaskID == lease.TaskID {
+		q.active = nil
+	}
 	return nil
 }
 
@@ -206,13 +239,28 @@ func (q *stubQueue) ReclaimLease(taskID string) {
 }
 
 func (q *stubQueue) Events(ctx context.Context) (<-chan queue.QueueEvent, error) {
-	return q.events, nil
+	ch := make(chan queue.QueueEvent, 16)
+	q.subsMu.Lock()
+	q.subscribers[ch] = struct{}{}
+	q.subsMu.Unlock()
+	// Unregister and close the channel when the caller's context is done.
+	go func() {
+		<-ctx.Done()
+		q.subsMu.Lock()
+		delete(q.subscribers, ch)
+		q.subsMu.Unlock()
+		close(ch)
+	}()
+	return ch, nil
 }
 
 func (q *stubQueue) Release(ctx context.Context, lease queue.Lease) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	delete(q.leases, lease.TaskID)
+	if q.active != nil && q.active.TaskID == lease.TaskID {
+		q.active = nil
+	}
 	return nil
 }
 
@@ -291,6 +339,10 @@ func (q *stubQueue) CancelTask(ctx context.Context, taskID string) error {
 	}
 	q.tasks[taskID] = task
 	delete(q.leases, taskID)
+	// Clear active lease (mirrors store.SQLiteQueue.CancelTask)
+	if q.active != nil && q.active.TaskID == taskID {
+		q.active = nil
+	}
 	return nil
 }
 
@@ -834,18 +886,14 @@ func TestPreemptionP0OverP2(t *testing.T) {
 	runIDP2 := harness.RunID("run-" + p2Lease.AttemptID)
 	h.SetOutcome(string(runIDP2), harness.OutcomeRetryableFailure, nil)
 
-	// Inject P0 task and event: P2 is now running (its result goroutine is
+	// Inject P0 task: P2 is now running (its result goroutine is
 	// blocked on BlockAllResults), so the worker's waitForResult has already
-	// passed the drain and is in the preemption select loop. Injecting now
-	// guarantees the event is observed by the select, not consumed by the
-	// drain.
+	// passed the drain and is in the preemption select loop. Enqueue
+	// broadcasts a P0 event to every subscriber (H3 fan-out), so the
+	// preemption watcher observes it without any test-side injection.
 	taskP0 := makeTask("t-p0", queue.TierP0)
 	if err := q.Enqueue(ctx, taskP0); err != nil {
 		t.Fatal(err)
-	}
-	select {
-	case q.events <- queue.QueueEvent{Tier: queue.TierP0}:
-	default:
 	}
 
 	// Wait for the worker to abort the P2 run.

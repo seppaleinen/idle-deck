@@ -485,7 +485,7 @@ func (w *Worker) handleResult(ctx context.Context, lease queue.Lease, task queue
 			// W6: log+continue on transient DB errors, consistent with start/wait paths.
 			return nil, false
 		}
-		// Terminal state: remove the trigger label we reacted to (event-contract §6).
+		// label removal on success (best-effort)
 		w.removeTriggerLabel(ctx, task)
 		return nil, false
 	}
@@ -728,6 +728,8 @@ func (w *Worker) queueEventsTimer(ctx context.Context, d time.Duration) <-chan s
 }
 
 // eventsNotify returns a channel that fires when a higher-tier event arrives.
+// Each call opens its own subscription via Queue.Events (per-subscription fan-out
+// since #39); events are not shared with other consumers (e.g. waitResult).
 // The channel is buffered (size 1) so the send never blocks: if the timer
 // fires first and the caller has already stopped listening, the event goroutine
 // can still deliver without panicking on a send to a closed channel.

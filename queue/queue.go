@@ -250,8 +250,13 @@ type Queue interface {
 	Ack(ctx context.Context, lease Lease, attemptID string) error
 	// Nack records the attempt outcome and lets retry policy decide (I6).
 	Nack(ctx context.Context, lease Lease, attemptID string, outcome AttemptOutcome) error
-	// Events returns a stream of enqueue notifications carrying the tier, so a busy
-	// worker can learn that higher-priority work arrived (preemption, D16/I7).
+	// Events returns a per-subscription stream of enqueue notifications
+	// carrying the tier, so a busy worker can learn that higher-priority
+	// work arrived (preemption, D16/I7). Each call registers a new
+	// subscriber and receives every broadcast independently — concurrent
+	// callers cannot starve each other (a higher-tier enqueue is seen by
+	// all subscribers). The subscription is released when ctx is
+	// cancelled.
 	Events(ctx context.Context) (<-chan QueueEvent, error)
 	// Release returns the lease without recording an outcome (only valid before the
 	// attempt is started).
