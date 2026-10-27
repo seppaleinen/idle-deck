@@ -1,0 +1,73 @@
+# idle-deck .dockerignore — files not needed in the build context.
+# The builder stage copies go.mod/go.sum then the whole repo; this reduces
+# the context size sent to the daemon.
+
+# VCS
+.git
+.gitignore
+.hg
+
+# Build output / binaries
+idle-deck
+idle-deck-remote
+*.exe
+*.test
+
+# IDE / editor
+.vscode
+.idea
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local dev artifacts
+*.db
+*.db-shm
+*.db-wal
+/tmp/
+/tmp.idle-deck-*
+
+# Logs
+*.log
+*.out
+*.err
+
+# CI / GitHub
+.github/
+.opencode/
+.opencode/
+
+# Documentation / markdown (not needed at runtime)
+*.md
+!README.md
+docs/
+
+# Tests
+*_test.go
+test/
+testdata/
+
+# Tool configs not needed in image
+.air.toml
+go.work
+go.work.sum
+
+# Secrets / local env
+.env
+.env.*
+*.pem
+*.key
+*.crt
+
+# Node / npm (not used in build; opencode is extracted from tarball)
+node_modules/
+package.json
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# opencode config (mounted at runtime, not baked in unless you want it)
+.opencode/
