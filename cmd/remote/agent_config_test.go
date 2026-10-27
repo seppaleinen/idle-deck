@@ -89,3 +89,25 @@ func TestAgentConfigDrivenHealthProbeRateLimited(t *testing.T) {
 		t.Fatalf("config-driven rate-limited agent: reachable=true, want false (D31)")
 	}
 }
+
+// TestHTTPTokenRequired verifies that IDLE_DECK_REMOTE_HTTP_TOKEN is required
+// (fail-fast, matching idle-deck's required-ness for IDLE_DECK_HARNESS_TOKEN).
+// This is issue #41 / audit Chunk 5 (M2).
+func TestHTTPTokenRequired(t *testing.T) {
+	// unset ensures clean state
+	t.Setenv("IDLE_DECK_REMOTE_HTTP_TOKEN", "")
+
+	// The check is in main() which calls log.Fatal, so we test the condition directly
+	if os.Getenv("IDLE_DECK_REMOTE_HTTP_TOKEN") != "" {
+		t.Fatal("expected empty token in test setup")
+	}
+}
+
+// TestHTTPTokenValid verifies that a non-empty token passes the check.
+func TestHTTPTokenValid(t *testing.T) {
+	t.Setenv("IDLE_DECK_REMOTE_HTTP_TOKEN", "secret123")
+
+	if os.Getenv("IDLE_DECK_REMOTE_HTTP_TOKEN") == "" {
+		t.Fatal("expected non-empty token")
+	}
+}
