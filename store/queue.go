@@ -128,8 +128,9 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)`
 	al := q.active
 	evTier := task.Tier
 	q.mu.Unlock()
-	if al != nil && tierRank(evTier) < tierRank(al.tier) {
-		q.broadcastEvent(queue.QueueEvent{Tier: evTier})	}
+	if al != nil && queue.TierRank(evTier) < queue.TierRank(al.tier) {
+		q.broadcastEvent(queue.QueueEvent{Tier: evTier})
+	}
 	q.notifyM.Lock()
 	notify := q.notify
 	q.notifyM.Unlock()
@@ -203,16 +204,17 @@ WHERE state = 'running' AND id IN (
 	var taskID, tier string
 	var created int64
 	var taskTier, taskTimeout int
-	err = tx.QueryRowContext(ctx, `
+	rankingSQL := queue.TierOrderingSQL()
+	err = tx.QueryRowContext(ctx, fmt.Sprintf(`
 SELECT id, tier,
-       CASE tier WHEN 'P0' THEN 0 WHEN 'P1' THEN 1 WHEN 'P2' THEN 2 WHEN 'P3' THEN 3 ELSE 99 END,
+       %s,
        created_at,
        timeout_seconds
   FROM tasks
  WHERE state = 'queued'
  ORDER BY %s ASC, created_at ASC, id ASC
  LIMIT 1
-`).Scan(&taskID, &tier, &taskTier, &created, &taskTimeout)
+`, rankingSQL, rankingSQL)).Scan(&taskID, &tier, &taskTier, &created, &taskTimeout)
 	if err == sql.ErrNoRows {
 		tx.Rollback()
 		return queue.Lease{}, queue.ErrNoWork
