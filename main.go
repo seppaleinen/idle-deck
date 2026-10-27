@@ -331,23 +331,18 @@ func runStatus(args []string) int {
 		fmt.Fprintf(os.Stderr, "status: heartbeat: %v\n", err)
 		return 1
 	}
-	pollInterval := 60 * time.Second
-	if beat.IsZero() {
-		fmt.Println("Heartbeat: never (daemon has not run)")
-	} else {
-		age := time.Since(beat)
-		fmt.Printf("Heartbeat age: %s\n", age.Round(time.Second))
-		if age > 3*pollInterval {
-			fmt.Println("Heartbeat: STALE (daemon may be dead or not polling)")
-		}
-	}
 	held, err := hb.RunLockHeld(context.Background())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "status: run lock: %v\n", err)
 		return 1
 	}
+	cfg = config.Defaults()
+	if v := os.Getenv("IDLE_DECK_DB"); v != "" {
+		fmt.Fprintf(os.Stderr, "status: run lock: %v\n", err)
+		return 1
+	}
 	if held {
-		if beat.IsZero() || time.Since(beat) > 3*pollInterval {
+		if beat.IsZero() || time.Since(beat) > 3*cfg.PollInterval {
 			fmt.Println("Run lock: held but heartbeat stale (orphaned lock)")
 		} else {
 			fmt.Println("Run lock: held")
