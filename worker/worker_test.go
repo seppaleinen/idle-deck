@@ -71,19 +71,9 @@ func (q *stubQueue) broadcastLocked(ev queue.QueueEvent) {
 }
 
 // tierRank returns a numeric rank for a task tier; lower is higher priority.
+// Uses queue.TierRank as the single source (D42, M4).
 func (q *stubQueue) tierRank(t queue.TaskTier) int {
-	switch t {
-	case queue.TierP0:
-		return 0
-	case queue.TierP1:
-		return 1
-	case queue.TierP2:
-		return 2
-	case queue.TierP3:
-		return 3
-	default:
-		return 99
-	}
+	return queue.TierRank(t)
 }
 
 func (q *stubQueue) Dequeue(ctx context.Context) (queue.Lease, error) {

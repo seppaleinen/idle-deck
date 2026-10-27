@@ -17,6 +17,8 @@ jobs:
           grep -rho '^\| \*\*D[0-9]\+\*\*' --include=AGENTS.md . | grep -o 'D[0-9]\+' | sort -u > /tmp/defined
           comm -23 /tmp/cited /tmp/defined
           # If the command exits non-zero CI will fail – guard from stale D-ids.
+      - name: TierRank single-source lint
+        run: scripts/check-tierrank-single-source.sh
       - name: Build all packages
         run: |
           # CGO_ENABLED=0 is asserted, not inherited: a dependency that
