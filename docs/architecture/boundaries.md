@@ -75,6 +75,33 @@ type TrackerSink interface {
 - MVP implementation: **one GitHub type** satisfies both interfaces (methods `ParseHandler`,
   `CommentIssue`, `SetIssueLabels` wired to the GitHub API).
 
+#### Stub-mirrors-wire (tracker analogue of D41)
+
+**Rule: the in-repo tracker stub must mirror the real GitHub REST response shapes — never invent a
+convenient shape.** Specifically:
+
+- `GET /repos/{owner}/{repo}/issues/{number}` returns **one issue object**, not an array.
+- `GET /repos/{owner}/{repo}/issues` (list) returns an **array** of issue objects.
+
+The stub is a *test of the wire*, not a test of the implementation. A stub that returns shapes the
+production adapter never sees tests the adapter against itself; the decode path is pinned to nothing,
+and drift between the stub and the real API is invisible to every test that passes.
+
+**Rationale:** the 2026-10-25 architecture audit's **H1** is exactly this failure — `getLabels` decoded
+the single-issue GET into `[]githubIssue` (a shape only the in-repo stub produced), so every `SetLabels`
+call failed silently against real GitHub/GHE: trigger-label removal on terminal state, escalation
+labels, and dashboard `SetLabels`. The worker logged the error and moved on, so runs "succeeded" while
+issues kept their trigger labels. The conformance suite (D41) solves this for the **harness** seam by
+pinning client-observable cases against the wire contract; the tracker seam had no equivalent
+black-box discipline, and the stub was the only wire it ever talked to. The code fix is tracked as
+[issue #37](https://github.com/seppaleinen/idle-deck/issues/37) (PR #47); this rule is the standing
+prevention. Related audit findings: **H1** (root cause), **H4** (stub drift in the prior audit's M7),
+and the 2026-10-14 audit's **M7** (harness stub testing a wire that doesn't exist).
+
+**Consequence:** any new tracker endpoint the stub models must first be checked against the real GitHub
+REST API (or GitHub Enterprise) shape, and a regression test must post the real body via `httptest`
+directly — not through the stub — so the decode path is pinned to the wire.
+
 ### 2. `Queue` — lease semantics, ack/nack, preemption signal
 
 The queue orders work and **leases** it. The lease is the whole fault-tolerance story: a daemon
