@@ -112,6 +112,41 @@ func TestConformanceC1_IdempotentStart(t *testing.T) {
 	}
 }
 
+// TestConformanceC1_EmptyAttemptIDRejected tests that POST /v1/runs with empty
+// attempt_id is rejected with 400 Bad Request and no run is registered in
+// AttemptMap or Runs (C1 idempotency by attempt_id — the empty key must never
+// poison the map, conforming to remote-contract §3/§9a).
+func TestConformanceC1_EmptyAttemptIDRejected(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// POST with empty attempt_id
+	body := mustJSON(startRequest{
+		AttemptID:      "",
+		Role:           "do",
+		Prompt:         "p",
+		Budget:         1000,
+		TimeoutSeconds: 60,
+		Repository:     wireRepository{ID: "repo-1", Name: "conformance/upstream", URL: srv.Config.TestUpstreamURL, Tracker: "github"},
+		Ticket:         &wireTicket{Tracker: "github", ExternalID: "42", URL: "https://example.com/issue/42"},
+	})
+	resp, _ := driveHTTP(t, srv, http.MethodPost, "/v1/runs", body)
+
+	// Assert 400 bad_request
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("empty attempt_id: code=%d, want 400", resp.StatusCode)
+	}
+
+	// Verify AttemptMap does not contain the empty string key
+	if _, ok := srv.AttemptMap[""]; ok {
+		t.Fatal("empty attempt_id: AttemptMap should not contain empty string key")
+	}
+
+	// Verify no run was registered in Runs
+	if len(srv.Runs) != 0 {
+		t.Fatalf("empty attempt_id: Runs map should be empty, got %d entries", len(srv.Runs))
+	}
+}
+
 // TestConformanceC2_AbortRunningRun tests that Abort a running run returns
 // only after the remote side confirms cancellation (or it was already terminal).
 func TestConformanceC2_AbortRunningRun(t *testing.T) {

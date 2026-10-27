@@ -269,6 +269,19 @@ func (s *TrackerServer) handleRepos(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// GET /repos/{owner}/{repo}/issues/{number} — a SINGLE issue object.
+	// GitHub's REST API returns one issue here, not an array. The stub must
+	// mirror the real wire shape (single object for this GET, array for the
+	// list GET below) so adapter tests exercise the decode path the adapter
+	// will actually hit against real GitHub — otherwise the stub drifts from
+	// the wire it is meant to model (D29, event-contract §6).
+	if r.Method == http.MethodGet && len(parts) >= 4 {
+		if num, err := strconv.Atoi(parts[3]); err == nil {
+			s.handleSingleIssue(w, r, parts, num)
+			return
+		}
+	}
+
 	// PATCH /repos/{owner}/{repo}/issues/{number} — replace the issue's label set.
 	// This is what TrackerSink.SetLabels exercises: the adapter computes the new
 	// set as (current ∪ add) − remove and PATCHes the whole list (GitHub's
@@ -464,6 +477,30 @@ func (s *TrackerServer) handleRepos(w http.ResponseWriter, r *http.Request) {
 	}
 
 	json.NewEncoder(w).Encode(pageIssues)
+}
+
+// handleSingleIssue serves GET /repos/{owner}/{repo}/issues/{number} as a
+// single JSON issue object — the real GitHub REST shape for this endpoint.
+// A 404 (unknown issue or wrong repo) is the documented no-op for getLabels.
+func (s *TrackerServer) handleSingleIssue(w http.ResponseWriter, r *http.Request, parts []string, num int) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	repo := parts[0] + "/" + parts[1]
+	if repo != s.State.Repo {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	s.State.mu.Lock()
+	issue, ok := s.State.Issues[num]
+	s.State.mu.Unlock()
+	if !ok {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(issue)
 }
 
 // buildNextURL builds an absolute URL for the next page (GitHub returns absolute URLs in Link).

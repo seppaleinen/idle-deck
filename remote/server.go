@@ -102,6 +102,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.AttemptID == "" {
 		errorJSON(w, http.StatusBadRequest, "bad_request", "attempt_id required")
+		return
 	}
 
 	// Idempotency: if this attempt_id already has a run, return it with 200
