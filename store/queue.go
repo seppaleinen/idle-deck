@@ -207,8 +207,7 @@ WHERE state = 'running' AND id IN (
 	rankingSQL := queue.TierOrderingSQL()
 	err = tx.QueryRowContext(ctx, fmt.Sprintf(`
 SELECT id, tier,
-       %s,
-       created_at,
+       %s,       created_at,
        timeout_seconds
   FROM tasks
  WHERE state = 'queued'
