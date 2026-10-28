@@ -63,6 +63,7 @@ jobs:
         run: |
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             echo "tags=ghcr.io/${GITHUB_REPOSITORY,,}:${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+            echo "latest=ghcr.io/${GITHUB_REPOSITORY,,}:latest" >> $GITHUB_OUTPUT
           else
             echo "tags=ghcr.io/${GITHUB_REPOSITORY,,}:main-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
           fi
@@ -71,6 +72,6 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.tag.outputs.tags }}
+          tags: ${{ steps.tag.outputs.tags }}${{ steps.tag.outputs.latest && format(',{0}', steps.tag.outputs.latest) || '' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

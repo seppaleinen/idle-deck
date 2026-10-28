@@ -1,0 +1,99 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+
+      - name: Set version
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Build binaries
+        env:
+          CGO_ENABLED: 0
+        run: |
+          mkdir -p dist
+          for GOOS in darwin linux; do
+            for GOARCH in amd64 arm64; do
+              OUT="dist/idle-deck_${{ steps.version.outputs.VERSION }}_${GOOS}_${GOARCH}"
+              GOOS=$GOOS GOARCH=$GOARCH go build -ldflags="-s -w" -o "$OUT" .
+              tar -czf "${OUT}.tar.gz" -C dist "$(basename $OUT)"
+              echo "Built ${OUT}.tar.gz"
+            done
+          done
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: Release ${{ steps.version.outputs.VERSION }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+
+      - name: Calculate SHA256s
+        id: sha256
+        run: |
+          echo "darwin_arm64=$(sha256sum dist/idle-deck_${{ steps.version.outputs.VERSION }}_darwin_arm64.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+          echo "darwin_amd64=$(sha256sum dist/idle-deck_${{ steps.version.outputs.VERSION }}_darwin_amd64.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+          echo "linux_arm64=$(sha256sum dist/idle-deck_${{ steps.version.outputs.VERSION }}_linux_arm64.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+          echo "linux_amd64=$(sha256sum dist/idle-deck_${{ steps.version.outputs.VERSION }}_linux_amd64.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+
+      - name: Check Homebrew tap exists
+        id: tap_check
+        run: |
+          if gh repo view seppaleinen/homebrew-idle-deck >/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "::warning::Homebrew tap 'seppaleinen/homebrew-idle-deck' does not exist. Skipping formula update."
+            echo "Create it with: gh repo create seppaleinen/homebrew-idle-deck --public --clone"
+          fi
+
+      - name: Update Homebrew Formula
+        if: steps.tap_check.outputs.exists == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: seppaleinen/homebrew-idle-deck
+          token: ${{ secrets.GITHUB_TOKEN }}
+          path: homebrew-idle-deck
+
+      - name: Patch formula SHA256s
+        if: steps.tap_check.outputs.exists == 'true'
+        run: |
+          cd homebrew-idle-deck
+          sed -i '' -e "s/sha256 \"\"/sha256 \"${{ steps.sha256.outputs.darwin_arm64 }}\"/" Formula/idle-deck.rb
+          sed -i '' -e "s/sha256 \"\"/sha256 \"${{ steps.sha256.outputs.darwin_amd64 }}\"/" Formula/idle-deck.rb
+          sed -i '' -e "s/sha256 \"\"/sha256 \"${{ steps.sha256.outputs.linux_arm64 }}\"/" Formula/idle-deck.rb
+          sed -i '' -e "s/sha256 \"\"/sha256 \"${{ steps.sha256.outputs.linux_amd64 }}\"/" Formula/idle-deck.rb
+          sed -i '' -e "s/VERSION = \".*\"/VERSION = \"${{ steps.version.outputs.VERSION }}\"/" Formula/idle-deck.rb
+
+      - name: Commit formula update
+        if: steps.tap_check.outputs.exists == 'true'
+        run: |
+          cd homebrew-idle-deck
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/idle-deck.rb
+          git commit -m "chore: update idle-deck to ${{ steps.version.outputs.VERSION }} [D32,D47]"
+          git push
