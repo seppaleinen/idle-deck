@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# git pre-push hook — idle-deck
+#
+# Issue #58: Pre-rebase build-verification script (post-mortem improvement #1)
+# D-refs: D48, D32, D34
+#
+# Pre-push (not pre-commit) is correct per the brief: mid-rebase commits are
+# individually valid; merge artifacts only exist at push time.
+#
+# The hook is opt-in per developer: git hooks live in .git/hooks/ in the
+# working tree, not the repository. Developers install it manually.
+# See docs/operations/build-gate.md.
+
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+SCRIPT="$REPO_ROOT/scripts/check-rebase-clean.sh"
+
+# If the script is missing, warn but allow the push — the gate is opt-in.
+if [[ ! -x "$SCRIPT" ]]; then
+    echo "pre-push: check-rebase-clean.sh not found or not executable" >&2
+    echo "pre-push: run 'cp scripts/git-hooks/pre-push .git/hooks/pre-push' to install" >&2
+    echo "pre-push: push allowed (gate is opt-in per developer)" >&2
+    exit 0
+fi
+
+# Run the build gate. Block the push on any failure.
+echo "pre-push: running build gate..."
+if ! "$SCRIPT"; then
+    echo "" >&2
+    echo "pre-push: build gate FAILED — push blocked." >&2
+    echo "pre-push: fix the errors above, then push again." >&2
+    echo "pre-push: see docs/operations/build-gate.md for details." >&2
+    exit 1
+fi
+
+# All checks passed.
+exit 0
