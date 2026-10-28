@@ -842,7 +842,7 @@ func (s *Server) queryAwaiting(ctx context.Context) ([]AwaitingItem, error) {
 // queued task (tier order, FIFO within tier), or — if the queue is empty —
 // the oldest running task. nil if there is nothing to suggest.
 func (s *Server) querySuggestedNext(ctx context.Context) (*SuggestedNextItem, error) {
-	const ranked = `CASE tier WHEN 'P0' THEN 0 WHEN 'P1' THEN 1 WHEN 'P2' THEN 2 WHEN 'P3' THEN 3 ELSE 99 END`
+	ranked := queue.TierOrderingSQL()
 	taskID, err := s.suggestedNextTaskID(ctx,
 		fmt.Sprintf(`
 			SELECT id FROM tasks
