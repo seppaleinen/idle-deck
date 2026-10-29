@@ -16,6 +16,11 @@ func TestLoad_MissingRequired(t *testing.T) {
 	for _, k := range allEnvVars() {
 		os.Unsetenv(k)
 	}
+	// Ensure Keychain doesn't provide any values (test runs on macOS with real Keychain).
+	origKc := Keychain
+	Keychain = newFakeKeychain()
+	defer func() { Keychain = origKc }()
+
 	_, err := Load(nil)
 	var miss *MissingVarError
 	if !errors.As(err, &miss) {
@@ -568,5 +573,57 @@ poll_interval: "120"
 	}
 	if cfg.PollInterval != 60*time.Second {
 		t.Errorf("PollInterval = %v, want 60s from flag", cfg.PollInterval)
+	}
+}
+
+// TestLoad_KeychainFallback verifies Keychain is consulted for secret fields
+// when env vars are empty (env > Keychain > YAML/defaults).
+func TestLoad_KeychainFallback(t *testing.T) {
+	// Setup fake keychain.
+	orig := Keychain
+	fk := &fakeKeychain{store: map[string]string{
+		KeyGitHubToken:  "ghp_from_keychain",
+		KeyHarnessToken: "ht_from_keychain",
+	}}
+	Keychain = &fakeKeychain{store: fk.store}
+	defer func() { Keychain = orig }()
+
+	clearEnv(t)
+	os.Setenv(EnvRepos, "acme/widgets")
+	os.Setenv(EnvHarnessURL, "https://harness.example.com")
+
+	// No env vars for tokens.
+	cfg, err := Load(nil)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.GitHubToken != "ghp_from_keychain" {
+		t.Errorf("GitHubToken = %q, want ghp_from_keychain from Keychain", cfg.GitHubToken)
+	}
+	if cfg.HarnessToken != "ht_from_keychain" {
+		t.Errorf("HarnessToken = %q, want ht_from_keychain from Keychain", cfg.HarnessToken)
+	}
+}
+
+// TestLoad_EnvWinsOverKeychain verifies env vars take precedence over Keychain.
+func TestLoad_EnvWinsOverKeychain(t *testing.T) {
+	orig := Keychain
+	Keychain = &fakeKeychain{store: map[string]string{
+		KeyGitHubToken: "ghp_from_keychain",
+	}}
+	defer func() { Keychain = orig }()
+
+	clearEnv(t)
+	os.Setenv(EnvGitHubToken, "ghp_from_env")
+	os.Setenv(EnvRepos, "acme/widgets")
+	os.Setenv(EnvHarnessURL, "https://harness.example.com")
+	os.Setenv(EnvHarnessToken, "ht")
+
+	cfg, err := Load(nil)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.GitHubToken != "ghp_from_env" {
+		t.Errorf("GitHubToken = %q, want ghp_from_env (env should win over Keychain)", cfg.GitHubToken)
 	}
 }

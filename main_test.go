@@ -44,6 +44,10 @@ func cleanEnv(env []string) []string {
 }
 
 func TestCheckNoConfig(t *testing.T) {
+	// Clear Keychain entries so test is deterministic (Keychain could provide values on macOS).
+	_ = exec.Command("security", "delete-generic-password", "-s", "idle-deck.secrets", "-a", "github.token").Run()
+	_ = exec.Command("security", "delete-generic-password", "-s", "idle-deck.secrets", "-a", "harness.token").Run()
+
 	bin := buildBinary(t)
 	cmd := exec.Command(bin, "check")
 	cmd.Env = cleanEnv(os.Environ())

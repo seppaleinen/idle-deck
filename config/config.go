@@ -225,6 +225,7 @@ func setField(root reflect.Value, f fieldMeta, raw string) error {
 }
 
 // FromEnv reads all environment variables, applies defaults, and validates types.
+// For secret fields it also consults the Keychain after env (D36).
 // It does not check for missing required variables (Validate does that).
 func FromEnv() (Config, error) {
 	c := Defaults()
@@ -237,10 +238,13 @@ func FromEnv() (Config, error) {
 			return Config{}, err
 		}
 	}
+	if Keychain != nil {
+		_ = resolveSecrets(reflect.ValueOf(&c).Elem())
+	}
 	return c, nil
 }
 
-// Load resolves config from YAML → defaults → env → flags and then validates.
+// Load resolves config from YAML → defaults → env → Keychain(secrets) → flags and then validates.
 // It is the strict entry point for the daemon (run), which refuses to start
 // on missing required variables or malformed values. The relaxed entry point
 // (LoadRelaxed) is the same pipeline plus validation, and is used by the
@@ -248,7 +252,7 @@ func FromEnv() (Config, error) {
 //
 // YAML config is optional (D23, D34). If --config is provided, that file is used.
 // Otherwise, the first existing file in DefaultConfigPaths() is used.
-// Precedence: CLI flags > env vars > YAML > defaults.
+// Precedence: CLI flags > env vars > Keychain(secrets) > YAML > defaults.
 func Load(fo *FlagOverrides) (Config, error) {
 	// Step 1: Load YAML (if provided or found)
 	var yamlCfg *Config

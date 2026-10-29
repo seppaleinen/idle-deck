@@ -4,12 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -47,6 +49,8 @@ func main() {
 		os.Exit(runStatus(os.Args[2:]))
 	case "serve":
 		os.Exit(runServe(os.Args[2:]))
+	case "secrets":
+		os.Exit(runSecrets(os.Args[2:]))
 	default:
 		usage()
 		os.Exit(2)
@@ -56,10 +60,11 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: idle-deck <command> [flags]")
 	fmt.Fprintln(os.Stderr, "commands:")
-	fmt.Fprintln(os.Stderr, "  check   validate configuration and connectivity")
-	fmt.Fprintln(os.Stderr, "  run     run the daemon in the foreground")
-	fmt.Fprintln(os.Stderr, "  status  report what the daemon is doing")
-	fmt.Fprintln(os.Stderr, "  serve   run the read-only dashboard")
+	fmt.Fprintln(os.Stderr, "  check    validate configuration and connectivity")
+	fmt.Fprintln(os.Stderr, "  run      run the daemon in the foreground")
+	fmt.Fprintln(os.Stderr, "  status   report what the daemon is doing")
+	fmt.Fprintln(os.Stderr, "  serve    run the read-only dashboard")
+	fmt.Fprintln(os.Stderr, "  secrets  manage secrets in macOS Keychain")
 	fmt.Fprintln(os.Stderr, "  --version  print the version")
 }
 
@@ -774,6 +779,147 @@ func runServe(args []string) int {
 	if err := srv.ListenAndServe(); err != nil {
 		fmt.Fprintln(os.Stderr, "serve: ", err)
 		return 1
+	}
+	return 0
+}
+
+func runSecrets(args []string) int {
+	if len(args) < 1 {
+		secretsUsage()
+		return 2
+	}
+
+	// Validate key if present
+	if len(args) >= 2 {
+		if !config.IsValidKey(args[1]) {
+			fmt.Fprintf(os.Stderr, "invalid key: %q (valid: %s, %s)\n",
+				args[1], config.KeyGitHubToken, config.KeyHarnessToken)
+			return 2
+		}
+	}
+
+	switch args[0] {
+	case "set":
+		return runSecretsSet(args[1:])
+	case "get":
+		return runSecretsGet(args[1:])
+	case "delete":
+		return runSecretsDelete(args[1:])
+	case "list":
+		return runSecretsList()
+	default:
+		fmt.Fprintf(os.Stderr, "unknown secrets command: %q\n", args[0])
+		secretsUsage()
+		return 2
+	}
+}
+
+func secretsUsage() {
+	fmt.Fprintln(os.Stderr, "usage: idle-deck secrets <command> [args]")
+	fmt.Fprintln(os.Stderr, "commands:")
+	fmt.Fprintln(os.Stderr, "  set <key> [value]    store a secret (reads from stdin if value omitted)")
+	fmt.Fprintln(os.Stderr, "  get <key>            retrieve a secret (prints raw value to stdout)")
+	fmt.Fprintln(os.Stderr, "  delete <key>         remove a secret")
+	fmt.Fprintln(os.Stderr, "  list                 list stored keys (no values)")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintf(os.Stderr, "valid keys: %s, %s\n", config.KeyGitHubToken, config.KeyHarnessToken)
+}
+
+func runSecretsSet(args []string) int {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: idle-deck secrets set <key> [value]")
+		return 2
+	}
+	key := args[0]
+	value := ""
+	if len(args) >= 2 {
+		value = args[1]
+	} else {
+		// Read from stdin
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "read stdin: %v\n", err)
+			return 1
+		}
+		value = strings.TrimSpace(string(data))
+	}
+	if value == "" {
+		fmt.Fprintln(os.Stderr, "secret value is empty")
+		return 1
+	}
+
+	if config.Keychain == nil {
+		// Non-macOS: print visible notice, succeed
+		fmt.Fprintf(os.Stderr, "notice: Keychain not available on %s; secret not stored. Use environment variables instead.\n", runtime.GOOS)
+		return 0
+	}
+
+	if err := config.Keychain.Set(key, value); err != nil {
+		fmt.Fprintf(os.Stderr, "store secret: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(os.Stderr, "stored %s\n", key)
+	return 0
+}
+
+func runSecretsGet(args []string) int {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: idle-deck secrets get <key>")
+		return 2
+	}
+	key := args[0]
+
+	if config.Keychain == nil {
+		fmt.Fprintln(os.Stderr, "secret not found")
+		return 1
+	}
+
+	value, err := config.Keychain.Get(key)
+	if err != nil {
+		if errors.Is(err, config.ErrSecretNotFound) {
+			fmt.Fprintln(os.Stderr, "secret not found")
+			return 1
+		}
+		fmt.Fprintf(os.Stderr, "get secret: %v\n", err)
+		return 1
+	}
+	fmt.Print(value)
+	return 0
+}
+
+func runSecretsDelete(args []string) int {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: idle-deck secrets delete <key>")
+		return 2
+	}
+	key := args[0]
+
+	if config.Keychain == nil {
+		// Non-macOS: quiet no-op success
+		return 0
+	}
+
+	if err := config.Keychain.Delete(key); err != nil {
+		fmt.Fprintf(os.Stderr, "delete secret: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(os.Stderr, "deleted %s\n", key)
+	return 0
+}
+
+func runSecretsList() int {
+	if config.Keychain == nil {
+		// Non-macOS: quiet no-op, no output
+		return 0
+	}
+
+	keys, err := config.Keychain.List()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "list secrets: %v\n", err)
+		return 1
+	}
+	for _, k := range keys {
+		fmt.Println(k)
 	}
 	return 0
 }
