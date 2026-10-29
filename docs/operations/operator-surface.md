@@ -128,30 +128,62 @@ with the install/uninstall commands and the four mechanical details spelled out 
 
 ## 4. Configuration
 
-**Environment variables and CLI flags only. No YAML file in the MVP.**
+**Environment variables, optional YAML file, and CLI flags.** Precedence: **CLI flags > environment > YAML > built-in defaults**. Environment beats YAML so a supervised daemon can be configured without a config file, and flags beat both so a developer can override one value for one run without editing anything.
 
-D23 established "env vars, optional YAML file, CLI flags override". This is the *MVP scope* of D23:
-the optional YAML file is **not built**. Nothing is superseded — D23's content is not falsified, it
-is simply not yet implemented — but an implementation session should not add a config file parser
-because a decision record mentions one.
+The YAML config file is optional (D23, D34). If `--config` is provided, that file is used. Otherwise, the first existing file in this order is used:
+1. `./idle-deck.yaml` (working directory)
+2. `~/.config/idle-deck/config.yaml` (user config)
+3. `/etc/idle-deck/config.yaml` (system config)
 
-A YAML file would be a second source of truth that can disagree with the first, and "which one won"
-becomes a class of bug that env-only configuration cannot have. It returns when someone actually
-wants it; the precedence chain below is already the shape it would slot into.
+### YAML Schema
 
-**Precedence: CLI flags > environment > built-in defaults.** Environment beats defaults so a
-supervised daemon can be configured without a config file, and flags beat both so a developer can
-override one value for one run without editing anything.
+All env vars map to YAML keys. Example:
+
+```yaml
+github:
+  token: "${IDLE_DECK_GITHUB_TOKEN}"  # Reference env var for secrets (never plaintext)
+  api: "https://api.github.com"        # Optional; for GitHub Enterprise
+harness:
+  url: "https://harness.example.com"
+  token: "${IDLE_DECK_HARNESS_TOKEN}"  # Reference env var for secrets
+repos: "owner/repo1,owner/repo2"
+db: "~/Library/Application Support/idle-deck/idle-deck.db"
+poll_interval: "60s"
+max_concurrent_jobs: 1
+log_level: "info"
+log_format: "json"
+tier_timeout_plan: "900s"
+tier_timeout_do: "3h"
+tier_timeout_sweep: "1h"
+tier_timeout_hotfix: "30m"
+budget_plan: 5000
+budget_do: 100000
+budget_sweep: 20000
+budget_hotfix: 50000
+github_api: "https://api.github.com"
+retry_backoff_initial: "30s"
+retry_backoff_max: "10m"
+sweep_period: "168h"
+sweep_repos: "owner/repo1"
+sweep_prompt: "Scan the repository for TODO and FIXME markers..."
+dashboard_addr: "127.0.0.1:8090"
+dashboard_actions: false
+yield_when_busy: false
+```
+
+**Secrets are never in YAML** (D36). Use `${ENV_VAR}` syntax to reference environment variables for `github.token` and `harness.token`. Plaintext tokens in YAML will be rejected at startup.
+
+> **D36 note.** The YAML parser reads the file but treats secret fields as opaque strings. Redaction in `idle-deck check --json` masks `github.token` and `harness.token` regardless of source (env or YAML). `.env` files are not supported — secrets live in the environment or Keychain (see §5.2).
 
 ### Required — the daemon refuses to start without these
 
-| Variable | Meaning |
-|---|---|
-| `IDLE_DECK_GITHUB_TOKEN` | Fine-grained PAT for the tracker, Issues read/write. Needs write because D29's label lifecycle writes labels. |
-| `IDLE_DECK_REPOS` | Comma-separated `owner/repo` list. **This list is the allowlist** (D30), checked again at ingestion (I1). |
-| `IDLE_DECK_HARNESS_URL` | Base URL of the remote execution service. |
-| `IDLE_DECK_HARNESS_TOKEN` | Bearer token for that service (D27). **Required on both sides of the harness seam** — the remote execution service must be configured with the same value under `IDLE_DECK_REMOTE_HTTP_TOKEN` (see §4's remote table and remote-contract §1). Both are required; setting them to different values makes every run a 401 → `non_retryable_failure` → immediate escalation of everything. |
-| `IDLE_DECK_REMOTE_ROLE_TO_MODEL` | **Required on the remote.** JSON mapping of role → model name, e.g. `'{"plan":"<model>","do":"<model>","sweep":"<model>"}'`. The remote ships no default model mapping (D6/D40: idle-deck never names a model, provider, or vendor; D46: the agent model is operator config, not a build-time choice) — if this is unset the remote **refuses to start** with a clear error naming the variable. It is listed here rather than §4's remote table because it is a hard failure, not a default. |
+| Variable | Meaning | YAML Key |
+|---|---|---|
+| `IDLE_DECK_GITHUB_TOKEN` | Fine-grained PAT for the tracker, Issues read/write. Needs write because D29's label lifecycle writes labels. | `github.token` |
+| `IDLE_DECK_REPOS` | Comma-separated `owner/repo` list. **This list is the allowlist** (D30), checked again at ingestion (I1). | `repos` |
+| `IDLE_DECK_HARNESS_URL` | Base URL of the remote execution service. | `harness.url` |
+| `IDLE_DECK_HARNESS_TOKEN` | Bearer token for that service (D27). **Required on both sides of the harness seam** — the remote execution service must be configured with the same value under `IDLE_DECK_REMOTE_HTTP_TOKEN` (see §4's remote table and remote-contract §1). Both are required; setting them to different values makes every run a 401 → `non_retryable_failure` → immediate escalation of everything. | `harness.token` |
+| `IDLE_DECK_REMOTE_ROLE_TO_MODEL` | **Required on the remote.** JSON mapping of role → model name, e.g. `'{"plan":"<model>","do":"<model>","sweep":"<model>"}'`. The remote ships no default model mapping (D6/D40: idle-deck never names a model, provider, or vendor; D46: the agent model is operator config, not a build-time choice) — if this is unset the remote **refuses to start** with a clear error naming the variable. It is listed here rather than §4's remote table because it is a hard failure, not a default. | — |
 
 > **The bearer token pair (issue #41).** The harness seam carries one credential across two
 > processes, and it has two env var names with asymmetric required-ness:

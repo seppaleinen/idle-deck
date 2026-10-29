@@ -8,6 +8,7 @@ import (
 type FlagOverrides struct {
 	fs *flag.FlagSet
 
+	ConfigFile          *string
 	DB                  *string
 	Repos               *string
 	GitHubAPI           *string
@@ -37,6 +38,7 @@ type FlagOverrides struct {
 func RegisterFlags(fs *flag.FlagSet) *FlagOverrides {
 	fo := &FlagOverrides{fs: fs}
 
+	fo.ConfigFile = fs.String("config", "", "Path to YAML config file (env IDLE_DECK_CONFIG)")
 	fo.DB = fs.String("db", "", "SQLite database path (env IDLE_DECK_DB)")
 	fo.Repos = fs.String("repos", "", "Comma-separated owner/repo list (env IDLE_DECK_REPOS)")
 	fo.GitHubAPI = fs.String("github-api", "", "GitHub API base URL (env IDLE_DECK_GITHUB_API)")

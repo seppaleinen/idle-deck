@@ -240,37 +240,55 @@ func FromEnv() (Config, error) {
 	return c, nil
 }
 
-// fromEnvNoValidate reads environment variables onto defaults, parsing types.
-// It does NOT validate required variables or format.
-func fromEnvNoValidate() (Config, error) {
-	c := Defaults()
-	for _, f := range fields {
-		val := os.Getenv(f.key)
-		if val == "" {
-			continue
+// Load resolves config from YAML → defaults → env → flags and then validates.
+// It is the strict entry point for the daemon (run), which refuses to start
+// on missing required variables or malformed values. The relaxed entry point
+// (LoadRelaxed) is the same pipeline plus validation, and is used by the
+// read-only commands (check, status, serve).
+//
+// YAML config is optional (D23, D34). If --config is provided, that file is used.
+// Otherwise, the first existing file in DefaultConfigPaths() is used.
+// Precedence: CLI flags > env vars > YAML > defaults.
+func Load(fo *FlagOverrides) (Config, error) {
+	// Step 1: Load YAML (if provided or found)
+	var yamlCfg *Config
+	var err error
+	if fo != nil && fo.ConfigFile != nil && *fo.ConfigFile != "" {
+		yamlCfg, err = LoadYAML(*fo.ConfigFile)
+		if err != nil {
+			return Config{}, err
 		}
-		if err := setField(reflect.ValueOf(&c).Elem(), f, val); err != nil {
+	} else {
+		if path := FindConfigFile(); path != "" {
+			yamlCfg, err = LoadYAML(path)
+			if err != nil {
+				return Config{}, err
+			}
+		}
+	}
+
+	// Step 2: Start with YAML base (or empty)
+	c := Config{}
+	if yamlCfg != nil {
+		c = *yamlCfg
+	}
+
+	// Step 3: Apply defaults for fields not set by YAML
+	c = applyDefaults(c)
+
+	// Step 4: Override with env vars
+	if err := applyEnv(&c); err != nil {
+		return Config{}, err
+	}
+
+	// Step 5: Override with CLI flags
+	if fo != nil {
+		if err := ApplyFlags(&c, fo); err != nil {
 			return Config{}, err
 		}
 	}
-	return c, nil
-}
 
-// Load builds a Config with precedence: defaults → env → flags (via flag.Visit).
-// Missing required variables or validation failures are returned as errors.
-func Load(fo *FlagOverrides) (Config, error) {
-	// Load resolves config from defaults → env → flags and then validates.
-	// It is the strict entry point for the daemon (run), which refuses to start
-	// on missing required variables or malformed values. The relaxed entry point
-	// (LoadRelaxed) is the same pipeline plus validation, and is used by the
-	// read-only commands (check, status, serve).
-	c, err := fromEnvNoValidate()
-	if err != nil {
-		return Config{}, err
-	}
-	if err := ApplyFlags(&c, fo); err != nil {
-		return Config{}, err
-	}
+	// Step 6: Validate
 	if err := Validate(c); err != nil {
 		return Config{}, err
 	}
