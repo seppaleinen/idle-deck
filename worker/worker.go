@@ -56,6 +56,15 @@ type IdlePolicy interface {
 	Idle(ctx context.Context) (bool, error)
 }
 
+// SpendStore is the interface for recording and querying spend ledger entries.
+// The concrete adapter (store.SQLiteQueue) satisfies it structurally.
+type SpendStore interface {
+	CumulativeSpend(ctx context.Context) (int64, error)
+	RecordSpend(ctx context.Context, taskID, attemptID string, tier queue.TaskTier, usage *harness.Usage) error
+	TryReserveSpend(ctx context.Context, taskID, attemptID string, delta int, globalBudget int) (bool, error)
+	ReleaseReservation(ctx context.Context, attemptID string) error
+}
+
 // Worker is the core composition root (not an adapter). It owns the pipeline:
 // Queue.Dequeue → Harness.Start → Harness.Result → Ack/Nack, with idle gating,
 // retry/escalation, and preemption.
@@ -63,21 +72,25 @@ type IdlePolicy interface {
 // Per boundaries.md §4, it has a constructor and a Run(ctx) method, no interface.
 // max_concurrent_jobs is a constructor parameter (D8; MVP: 1).
 type Worker struct {
-	queue          Queue
-	harness        Harness
-	sink           TrackerSink
-	policy         IdlePolicy
-	maxConcurrent  int
-	backoffInitial time.Duration
-	backoffMax     time.Duration
-	log            *slog.Logger
+	queue           Queue
+	harness         Harness
+	sink            TrackerSink
+	policy          IdlePolicy
+	maxConcurrent   int
+	backoffInitial  time.Duration
+	backoffMax      time.Duration
+	log             *slog.Logger
+	globalBudget    int          // 0 = disabled; global spend ceiling in tokens
+	spendStore      SpendStore   // for CumulativeSpend / RecordSpend
 }
 
 // NewWorker creates a new Worker with all four dependencies injected.
 // maxConcurrent is the worker-side concurrency limit (D8; MVP: 1).
 // backoffInitial and backoffMax define the exponential backoff range (D37).
 // Defaults are 30s initial, 10m max.
-func NewWorker(q Queue, h Harness, s TrackerSink, p IdlePolicy, maxConcurrent int, backoffInitial, backoffMax time.Duration, log *slog.Logger) *Worker {
+// globalBudgetTokens is the global spend ceiling in tokens (0 = disabled, #69).
+// spendStore is the spend ledger store for recording and querying spend.
+func NewWorker(q Queue, h Harness, s TrackerSink, p IdlePolicy, maxConcurrent int, backoffInitial, backoffMax time.Duration, log *slog.Logger, globalBudgetTokens int, spendStore SpendStore) *Worker {
 	if maxConcurrent < 1 {
 		maxConcurrent = 1
 	}
@@ -94,14 +107,16 @@ func NewWorker(q Queue, h Harness, s TrackerSink, p IdlePolicy, maxConcurrent in
 		log = slog.New(slog.DiscardHandler)
 	}
 	return &Worker{
-		queue:          q,
-		harness:        h,
-		sink:           s,
-		policy:         p,
-		maxConcurrent:  maxConcurrent,
-		backoffInitial: backoffInitial,
-		backoffMax:     backoffMax,
-		log:            log,
+		queue:           q,
+		harness:         h,
+		sink:            s,
+		policy:          p,
+		maxConcurrent:   maxConcurrent,
+		backoffInitial:  backoffInitial,
+		backoffMax:      backoffMax,
+		log:             log,
+		globalBudget:    globalBudgetTokens,
+		spendStore:      spendStore,
 	}
 }
 
@@ -131,6 +146,21 @@ func (w *Worker) Run(ctx context.Context) error {
 	return ctx.Err()
 }
 
+// canDispatch checks whether a new task can be dispatched under the global
+// budget ceiling. Returns true if allowed, false if the ceiling would be
+// exceeded. If globalBudget is 0 (disabled) or spendStore is nil, always
+// allows dispatch (backward compatible).
+func (w *Worker) canDispatch(ctx context.Context) (bool, error) {
+	if w.globalBudget <= 0 || w.spendStore == nil {
+		return true, nil // ceiling disabled or no store — backward compatible
+	}
+	spent, err := w.spendStore.CumulativeSpend(ctx)
+	if err != nil {
+		return false, fmt.Errorf("worker: cumulative spend: %w", err)
+	}
+	return spent < int64(w.globalBudget), nil
+}
+
 // runLoop is a single worker loop. It runs until ctx is cancelled.
 func (w *Worker) runLoop(ctx context.Context) error {
 	for {
@@ -145,6 +175,24 @@ func (w *Worker) runLoop(ctx context.Context) error {
 		// failure (error ≠ idle: boundaries.md §4, IdlePolicy negative list).
 		if err := w.waitIdle(ctx); err != nil {
 			return err
+		}
+
+		// 1b. Global spend ceiling gate — check before dequeue (D37, #69).
+		// If ceiling is reached, sleep and re-probe; do not dequeue.
+		for {
+			allowed, err := w.canDispatch(ctx)
+			if err != nil {
+				return err
+			}
+			if allowed {
+				break
+			}
+			w.log.Info("worker: global budget ceiling reached, waiting", "ceiling", w.globalBudget)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(10 * time.Second):
+			}
 		}
 
 		// 2. Dequeue — blocks until work is available.
@@ -169,6 +217,30 @@ func (w *Worker) runLoop(ctx context.Context) error {
 		// 4. Build RunRequest.
 		req := w.buildRunRequest(task, lease)
 
+		// 4b. Atomic budget reservation (issue #69). Reserve the task's budget
+		// before dispatch to prevent race conditions when maxConcurrent > 1.
+		// The reservation is released on failure or converted to actual spend
+		// on success via RecordSpend.
+		if w.spendStore != nil && w.globalBudget > 0 {
+			reserved, err := w.spendStore.TryReserveSpend(ctx, lease.TaskID, lease.AttemptID, req.Budget, w.globalBudget)
+			if err != nil {
+				w.log.Error("worker: try reserve spend", "task_id", task.ID, "err", err)
+				_ = w.queue.Release(ctx, lease)
+				continue
+			}
+			if !reserved {
+				w.log.Info("worker: budget reservation failed (ceiling reached), re-queuing", "task_id", task.ID)
+				_ = w.queue.Release(ctx, lease)
+				// Wait a bit before next dequeue to avoid tight loop
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(10 * time.Second):
+				}
+				continue
+			}
+		}
+
 		w.log.Info("worker: starting run",
 			"task_id", task.ID,
 			"tier", task.Tier,
@@ -180,6 +252,10 @@ func (w *Worker) runLoop(ctx context.Context) error {
 		runID, err := w.harness.Start(ctx, req)
 		if err != nil {
 			w.log.Error("worker: harness start", "task_id", task.ID, "err", err)
+			// Release reservation on start failure
+			if w.spendStore != nil {
+				_ = w.spendStore.ReleaseReservation(ctx, lease.AttemptID)
+			}
 			// Start failure is classified by the harness, not hardcoded:
 			// a 401/403/404/422 is non_retryable (config bug or refused
 			// budget — retrying won't help), while a 429/5xx/network error
@@ -196,6 +272,10 @@ func (w *Worker) runLoop(ctx context.Context) error {
 		result, preempted, err := w.waitForResult(ctx, lease, runID)
 		if err != nil {
 			w.log.Error("worker: wait for result", "task_id", task.ID, "error", err)
+			// Release reservation on wait error
+			if w.spendStore != nil {
+				_ = w.spendStore.ReleaseReservation(ctx, lease.AttemptID)
+			}
 			// Result errors are classified by the harness (§7): a 404 mid-poll
 			// is non_retryable (lost state), a 429/5xx/network error is
 			// retryable. Only context cancellation (the worker is shutting
@@ -364,6 +444,10 @@ drain:
 		select {
 		case <-ctx.Done():
 			w.harness.Abort(ctx, runID)
+			// Release reservation on context cancellation
+			if w.spendStore != nil {
+				_ = w.spendStore.ReleaseReservation(ctx, lease.AttemptID)
+			}
 			// Wait for the result goroutine to drain.
 			select {
 			case <-resultCh:
@@ -384,6 +468,10 @@ drain:
 					"event_tier", ev.Tier,
 				)
 				_ = w.harness.Abort(ctx, runID)
+				// Release reservation on preemption
+				if w.spendStore != nil {
+					_ = w.spendStore.ReleaseReservation(ctx, lease.AttemptID)
+				}
 				// Wait for the result goroutine to return (it should be
 				// preempted — the harness returns OutcomePreempted).
 				select {
@@ -484,6 +572,12 @@ func (w *Worker) handleResult(ctx context.Context, lease queue.Lease, task queue
 			w.log.Error("worker: ack", "task_id", task.ID, "err", err)
 			// W6: log+continue on transient DB errors, consistent with start/wait paths.
 			return nil, false
+		}
+		// Record spend for the global budget ceiling (#69).
+		if w.spendStore != nil && result.Usage != nil {
+			if err := w.spendStore.RecordSpend(ctx, lease.TaskID, lease.AttemptID, task.Tier, result.Usage); err != nil {
+				w.log.Error("worker: record spend", "task_id", task.ID, "err", err)
+			}
 		}
 		// label removal on success (best-effort)
 		w.removeTriggerLabel(ctx, task)

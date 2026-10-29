@@ -239,9 +239,18 @@ func (h *RemoteHarness) Result(ctx context.Context, id RunID) (RunResult, error)
 				if len(artifacts) == 0 {
 					artifacts = nil
 				}
+				var usage *Usage
+				if runResp.Usage != nil {
+					usage = &Usage{
+						PromptTokens:     runResp.Usage.PromptTokens,
+						CompletionTokens: runResp.Usage.CompletionTokens,
+						TotalTokens:      runResp.Usage.TotalTokens,
+					}
+				}
 				return RunResult{
 					Outcome:   outcome,
 					Artifacts: artifacts,
+					Usage:     usage,
 				}, nil
 			}
 

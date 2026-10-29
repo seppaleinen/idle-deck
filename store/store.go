@@ -19,7 +19,7 @@ func dsn(path string) string {
 	return path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode=WAL"
 }
 
-const SchemaVersion = 11
+const SchemaVersion = 13
 
 const v1Schema = `
 CREATE TABLE IF NOT EXISTS repositories (
@@ -154,6 +154,46 @@ const v11AddRepositoryURL = `
 ALTER TABLE tasks ADD COLUMN repository_url TEXT;
 `
 
+// v12AddSpendLedger adds the spend_ledger table for the global spend ceiling
+// (issue #69). Each record captures token consumption for one run attempt.
+// The worker records spend via RecordSpend after a terminal result, and reads
+// the cumulative spend via CumulativeSpend to enforce the ceiling before
+// dispatching a new task.
+// UNIQUE(attempt_id) enforces idempotency: RecordSpend uses ON CONFLICT(attempt_id)
+// DO NOTHING so retries don't double-count tokens.
+const v12AddSpendLedger = `
+CREATE TABLE IF NOT EXISTS spend_ledger (
+    id            TEXT PRIMARY KEY,
+    task_id       TEXT NOT NULL,
+    attempt_id    TEXT NOT NULL UNIQUE,
+    tier          TEXT NOT NULL,
+    prompt_tokens INTEGER NOT NULL DEFAULT 0 CHECK (prompt_tokens >= 0),
+    completion_tokens INTEGER NOT NULL DEFAULT 0 CHECK (completion_tokens >= 0),
+    total_tokens  INTEGER NOT NULL DEFAULT 0 CHECK (total_tokens >= 0 AND total_tokens <= 10000000),
+    recorded_at   INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_spend_ledger_task ON spend_ledger (task_id);
+CREATE INDEX IF NOT EXISTS idx_spend_ledger_attempt ON spend_ledger (attempt_id);
+`
+
+// v13AddSpendReservations adds the spend_reservations table for atomic
+// ceiling reservation (issue #69). Before dispatching a task, the worker
+// reserves the task's budget (generation token ceiling) in a single
+// SERIALIZABLE transaction. On completion, the reservation is released
+// and actual usage is recorded. This prevents race conditions when
+// maxConcurrent > 1 (D41).
+const v13AddSpendReservations = `
+CREATE TABLE IF NOT EXISTS spend_reservations (
+    attempt_id       TEXT PRIMARY KEY,
+    task_id          TEXT NOT NULL,
+    reserved_tokens  INTEGER NOT NULL CHECK (reserved_tokens > 0),
+    created_at       INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_spend_reservations_task ON spend_reservations (task_id);
+`
+
 // v9AddUniqueDedupeKey enforces the idempotency invariant: Enqueue is
 // idempotent per dedupe_key, so two tasks with the same key must not coexist.
 // SQLite cannot ALTER TABLE ADD CONSTRAINT, so the tasks table is rebuilt:
@@ -225,6 +265,8 @@ var migrations = []migration{
 	{version: 9, sql: v9AddUniqueDedupeKey},
 	{version: 10, sql: v10AddDashboardVisits},
 	{version: 11, sql: v11AddRepositoryURL},
+	{version: 12, sql: v12AddSpendLedger},
+	{version: 13, sql: v13AddSpendReservations},
 }
 
 // CurrentVersion returns the schema version recorded in the database.

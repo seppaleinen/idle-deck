@@ -11,6 +11,14 @@ import (
 	"github.com/google/uuid"
 )
 
+// HarnessUsage is the stub's wire usage shape, mirroring the remote's
+// Usage type (remote-contract §6).
+type HarnessUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+}
+
 // HarnessRun represents a run in the harness stub.
 type HarnessRun struct {
 	ID             string
@@ -26,6 +34,7 @@ type HarnessRun struct {
 	LastActivityAt time.Time
 	Outcome        *HarnessOutcome
 	Artifacts      []HarnessArtifact
+	Usage          *HarnessUsage
 	Logs           []string
 	LogOffset      int
 	Cancelled      bool
@@ -240,7 +249,9 @@ func (s *HarnessState) GetRun(runID string) (*HarnessRun, bool) {
 }
 
 // CompleteRun marks a run as terminal with the given outcome and artifacts.
-func (s *HarnessState) CompleteRun(runID string, outcome *HarnessOutcome, artifacts []HarnessArtifact) bool {
+// Optional usage is appended as a variadic parameter to maintain backward
+// compatibility with existing callers.
+func (s *HarnessState) CompleteRun(runID string, outcome *HarnessOutcome, artifacts []HarnessArtifact, usage ...*HarnessUsage) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	run, ok := s.Runs[runID]
@@ -250,6 +261,9 @@ func (s *HarnessState) CompleteRun(runID string, outcome *HarnessOutcome, artifa
 	run.Status = "terminal"
 	run.Outcome = outcome
 	run.Artifacts = artifacts
+	if len(usage) > 0 {
+		run.Usage = usage[0]
+	}
 	run.LastActivityAt = time.Now().UTC()
 	return true
 }
@@ -479,6 +493,13 @@ func (s *HarnessServer) handleGetRun(w http.ResponseWriter, r *http.Request, run
 			"message": run.Outcome.Message,
 		},
 		"artifacts": run.Artifacts,
+	}
+	if run.Usage != nil {
+		resp["usage"] = map[string]any{
+			"prompt_tokens":     run.Usage.PromptTokens,
+			"completion_tokens": run.Usage.CompletionTokens,
+			"total_tokens":      run.Usage.TotalTokens,
+		}
 	}
 	json.NewEncoder(w).Encode(resp)
 }

@@ -345,6 +345,91 @@ func TestHealthBusyIsClientObservable(t *testing.T) {
 	t.Logf("C10: /health emits busy=true when a run is executing (D49)")
 }
 
+// TestConformanceC10_UsageReporting tests that the terminal run response
+// includes usage with prompt_tokens, completion_tokens, and total_tokens
+// when the remote reports it (conformance case C10).
+func TestConformanceC10_UsageReporting(t *testing.T) {
+	srv, runner := newTestServer(t)
+
+	code, id := startRun(t, srv, "c10-usage", "do", "p", 1000, 60)
+	if code != http.StatusCreated {
+		t.Fatalf("start: code=%d, want 201", code)
+	}
+
+	// Inject a terminal result with usage
+	runner.mu.Lock()
+	for sid, ch := range runner.running {
+		runner.results[sid] = RunResult{
+			Outcome: OutcomeSucceeded,
+			Artifacts: []Artifact{
+				{Kind: "pull_request", URI: "https://github.com/acme/widgets/pull/9"},
+			},
+			Usage: &Usage{
+				PromptTokens:     1500,
+				CompletionTokens: 3500,
+				TotalTokens:      5000,
+			},
+		}
+		close(ch)
+	}
+	runner.mu.Unlock()
+
+	time.Sleep(100 * time.Millisecond)
+	_, out := getRun(t, srv, id)
+	if out.Outcome == nil || out.Outcome.State != "completed" {
+		t.Fatalf("state=%v, want completed", out.Outcome)
+	}
+	if out.Usage == nil {
+		t.Fatal("usage is nil, want populated usage")
+	}
+	if out.Usage.PromptTokens != 1500 {
+		t.Fatalf("prompt_tokens=%d, want 1500", out.Usage.PromptTokens)
+	}
+	if out.Usage.CompletionTokens != 3500 {
+		t.Fatalf("completion_tokens=%d, want 3500", out.Usage.CompletionTokens)
+	}
+	if out.Usage.TotalTokens != 5000 {
+		t.Fatalf("total_tokens=%d, want 5000", out.Usage.TotalTokens)
+	}
+	t.Logf("C10: terminal response includes usage with prompt/completion/total tokens")
+}
+
+// TestConformanceC10_UsageAbsent tests that the terminal run response
+// omits usage entirely when the runner returns nil Usage (conformance case C10).
+func TestConformanceC10_UsageAbsent(t *testing.T) {
+	srv, runner := newTestServer(t)
+
+	code, id := startRun(t, srv, "c10-usage-absent", "do", "p", 1000, 60)
+	if code != http.StatusCreated {
+		t.Fatalf("start: code=%d, want 201", code)
+	}
+
+	// Inject a terminal result WITHOUT usage (nil Usage)
+	runner.mu.Lock()
+	for sid, ch := range runner.running {
+		runner.results[sid] = RunResult{
+			Outcome: OutcomeSucceeded,
+			Artifacts: []Artifact{
+				{Kind: "pull_request", URI: "https://github.com/acme/widgets/pull/9"},
+			},
+			Usage: nil,
+		}
+		close(ch)
+	}
+	runner.mu.Unlock()
+
+	time.Sleep(100 * time.Millisecond)
+	_, out := getRun(t, srv, id)
+	if out.Outcome == nil || out.Outcome.State != "completed" {
+		t.Fatalf("state=%v, want completed", out.Outcome)
+	}
+	// Usage must be omitted (nil), not zeroed
+	if out.Usage != nil {
+		t.Fatalf("usage should be nil when runner returns nil Usage, got %+v", out.Usage)
+	}
+	t.Logf("C10: terminal response omits usage when runner returns nil Usage")
+}
+
 // newTestServer creates a test server with a stub runner.
 func newTestServer(t *testing.T) (*Server, *stubRunner) {
 	t.Helper()

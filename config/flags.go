@@ -32,7 +32,8 @@ type FlagOverrides struct {
 	SweepPrompt         *string
 	DashboardAddr       *string
 	DashboardActions    *string
-	YieldWhenBusy       *string // D49: yield when /health reports busy (default false)
+	YieldWhenBusy        *string // D49: yield when /health reports busy (default false)
+	GlobalBudgetTokens   *string // global spend ceiling in tokens (0 = disabled)
 }
 
 func RegisterFlags(fs *flag.FlagSet) *FlagOverrides {
@@ -63,6 +64,7 @@ func RegisterFlags(fs *flag.FlagSet) *FlagOverrides {
 	fo.DashboardAddr = fs.String("dashboard-addr", "", "Dashboard listen address (env IDLE_DECK_DASHBOARD_ADDR)")
 	fo.DashboardActions = fs.String("dashboard-actions", "", "Enable dashboard actions (env IDLE_DECK_DASHBOARD_ACTIONS)")
 	fo.YieldWhenBusy = fs.String("yield-when-busy", "", "Yield when /health reports busy (env IDLE_DECK_YIELD_WHEN_BUSY, D49)")
+	fo.GlobalBudgetTokens = fs.String("global-budget-tokens", "", "Global spend ceiling in tokens; 0 disables (env IDLE_DECK_GLOBAL_BUDGET_TOKENS)")
 
 	return fo
 }

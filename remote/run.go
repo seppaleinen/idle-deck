@@ -242,6 +242,7 @@ type runResponse struct {
 	RunID     string           `json:"run_id,omitempty"`
 	Outcome   *outcomeResponse `json:"outcome,omitempty"`
 	Artifacts []Artifact       `json:"artifacts,omitempty"`
+	Usage     *Usage           `json:"usage,omitempty"` // token usage, optional
 }
 
 type outcomeResponse struct {
@@ -296,6 +297,7 @@ func (r *Run) toWireResponse() runResponse {
 			Message: "done",
 		}
 		resp.Artifacts = r.Outcome.Artifacts
+		resp.Usage = r.Outcome.Usage
 	}
 	return resp
 }

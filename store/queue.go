@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/seppaleinen/idle-deck/harness"
 	"github.com/seppaleinen/idle-deck/queue"
 )
 
@@ -863,4 +864,132 @@ INSERT INTO tracker_polls (repo, last_poll) VALUES (?, ?)
 ON CONFLICT(repo) DO UPDATE SET last_poll = excluded.last_poll`,
 		repo, t.UnixNano())
 	return err
+}
+
+// SpendRecord represents one row in the spend_ledger table.
+type SpendRecord struct {
+	ID               string
+	TaskID           string
+	AttemptID        string
+	Tier             queue.TaskTier
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
+	RecordedAt       time.Time
+}
+
+// CumulativeSpend returns the sum of total_tokens across all recorded spend
+// entries. If no records exist, returns 0. Used by the worker to enforce the
+// global budget ceiling before dispatching a task.
+func (q *SQLiteQueue) CumulativeSpend(ctx context.Context) (int64, error) {
+	var total int64
+	err := q.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(total_tokens), 0) FROM spend_ledger`).Scan(&total)
+	if err != nil {
+		return 0, fmt.Errorf("store: cumulative spend: %w", err)
+	}
+	return total, nil
+}
+
+// TryReserveSpend atomically checks if the global budget ceiling would be
+// exceeded by adding delta tokens, and if not, reserves delta tokens for the
+// given attempt. It uses a SERIALIZABLE transaction to prevent race conditions
+// when maxConcurrent > 1 (D41). Returns (reserved, error). If reserved is
+// false, the ceiling would be exceeded and the caller should not dispatch.
+// The reservation is stored in spend_reservations and must be released via
+// ReleaseReservation or converted to actual spend via RecordSpend.
+func (q *SQLiteQueue) TryReserveSpend(ctx context.Context, taskID, attemptID string, delta int, globalBudget int) (bool, error) {
+	if globalBudget <= 0 {
+		return true, nil // ceiling disabled
+	}
+	if delta <= 0 {
+		return false, fmt.Errorf("store: reserve spend: delta must be positive")
+	}
+
+	tx, err := q.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+
+	// Get current spent + reserved
+	var spent int64
+	err = tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(total_tokens), 0) FROM spend_ledger`).Scan(&spent)
+	if err != nil {
+		return false, fmt.Errorf("store: reserve spend: read spent: %w", err)
+	}
+	var reserved int64
+	err = tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(reserved_tokens), 0) FROM spend_reservations`).Scan(&reserved)
+	if err != nil {
+		return false, fmt.Errorf("store: reserve spend: read reserved: %w", err)
+	}
+
+	if spent+reserved+int64(delta) > int64(globalBudget) {
+		return false, nil // would exceed ceiling
+	}
+
+	// Insert reservation
+	now := q.now()
+	_, err = tx.ExecContext(ctx, `
+INSERT INTO spend_reservations (attempt_id, task_id, reserved_tokens, created_at)
+VALUES (?, ?, ?, ?)
+`,
+		attemptID, taskID, delta, now.UnixNano())
+	if err != nil {
+		return false, fmt.Errorf("store: reserve spend: insert: %w", err)
+	}
+
+	return tx.Commit() == nil, nil
+}
+
+// ReleaseReservation removes a reservation for the given attempt. Call this
+// when a task fails before completion (e.g., harness.Start error) so the
+// reserved tokens are returned to the available pool.
+func (q *SQLiteQueue) ReleaseReservation(ctx context.Context, attemptID string) error {
+	_, err := q.db.ExecContext(ctx, `DELETE FROM spend_reservations WHERE attempt_id = ?`, attemptID)
+	if err != nil {
+		return fmt.Errorf("store: release reservation: %w", err)
+	}
+	return nil
+}
+
+// RecordSpend inserts a spend record for a completed attempt. It is idempotent
+// on attempt_id — if a record already exists for the attempt, it is
+// a no-op. The worker calls this after receiving a terminal RunResult with
+// usage data. It also releases any reservation for the attempt.
+func (q *SQLiteQueue) RecordSpend(ctx context.Context, taskID, attemptID string, tier queue.TaskTier, usage *harness.Usage) error {
+	if usage == nil {
+		// Still release reservation even if no usage reported
+		_ = q.ReleaseReservation(ctx, attemptID)
+		return nil // no usage reported — nothing to record
+	}
+	// Validate usage to prevent DoS via inflated token counts (issue #69)
+	if !usage.Valid() {
+		_ = q.ReleaseReservation(ctx, attemptID)
+		return fmt.Errorf("store: record spend: invalid usage: prompt=%d completion=%d total=%d (max per run=%d)",
+			usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, harness.MaxTokensPerRun)
+	}
+
+	tx, err := q.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := q.now()
+	_, err = tx.ExecContext(ctx, `
+INSERT INTO spend_ledger (id, task_id, attempt_id, tier, prompt_tokens, completion_tokens, total_tokens, recorded_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(attempt_id) DO NOTHING
+`,
+		newID(), taskID, attemptID, string(tier), usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, now.UnixNano())
+	if err != nil {
+		return fmt.Errorf("store: record spend: %w", err)
+	}
+
+	// Release the reservation (idempotent: DELETE is no-op if not exists)
+	_, err = tx.ExecContext(ctx, `DELETE FROM spend_reservations WHERE attempt_id = ?`, attemptID)
+	if err != nil {
+		return fmt.Errorf("store: record spend: release reservation: %w", err)
+	}
+
+	return tx.Commit()
 }

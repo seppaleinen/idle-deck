@@ -390,7 +390,7 @@ func runRun(args []string) int {
 		}
 	}()
 
-	w := worker.NewWorker(q, h, trk, idlePolicy, cfg.MaxConcurrent, cfg.RetryBackoffInitial, cfg.RetryBackoffMax, log)
+	w := worker.NewWorker(q, h, trk, idlePolicy, cfg.MaxConcurrent, cfg.RetryBackoffInitial, cfg.RetryBackoffMax, log, cfg.GlobalBudgetTokens, q)
 	if err := w.Run(ctx); err != nil {
 		log.Error("worker exited", "err", err)
 		return 1
@@ -417,19 +417,20 @@ func runStatus(args []string) int {
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
 		if *jsonFlag {
 			result := map[string]interface{}{
-				"run_lock": "none",
-				"heartbeat": nil,
+				"run_lock":        "none",
+				"heartbeat":       nil,
 				"queue": map[string]interface{}{
 					"queued":    map[string]int{},
 					"running":   map[string]int{},
 					"succeeded": map[string]int{},
 					"escalated": map[string]int{},
 				},
-				"polls":         []interface{}{},
-				"active_task":   nil,
-				"harness":       nil,
-				"last_escalation": nil,
-				"message": "no state yet (database not found)",
+				"polls":             []interface{}{},
+				"active_task":       nil,
+				"harness":           nil,
+				"last_escalation":   nil,
+				"global_spend":      nil,
+				"message":           "no state yet (database not found)",
 			}
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetIndent("", "  ")
@@ -649,9 +650,36 @@ func runStatus(args []string) int {
 			"harness":           harness,
 			"last_escalation":   lastEscalation,
 			"config_redacted":   config.Redact(cfg),
+			"global_spend":      nil,
 		}
 		if !beat.IsZero() {
 			result["heartbeat"] = beat.Format(time.RFC3339)
+		}
+
+		// Query cumulative spend from spend_ledger
+		var totalSpend int64
+		err = db.QueryRowContext(ctx, `SELECT COALESCE(SUM(total_tokens), 0) FROM spend_ledger`).Scan(&totalSpend)
+		if err == nil {
+			ceiling := int64(cfg.GlobalBudgetTokens)
+			enabled := cfg.GlobalBudgetTokens > 0
+			remaining := int64(0)
+			exhausted := false
+			if enabled {
+				if ceiling > 0 {
+					remaining = ceiling - totalSpend
+					if remaining < 0 {
+						remaining = 0
+					}
+				}
+				exhausted = totalSpend >= ceiling
+			}
+			result["global_spend"] = map[string]interface{}{
+				"total_tokens": totalSpend,
+				"ceiling":      ceiling,
+				"enabled":      enabled,
+				"remaining":    remaining,
+				"exhausted":    exhausted,
+			}
 		}
 
 		enc := json.NewEncoder(os.Stdout)

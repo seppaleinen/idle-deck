@@ -86,6 +86,7 @@ type acpSession struct {
 	pending   map[int]chan rpcResult
 	result    RunResult
 	artifacts []Artifact
+	usage     *Usage         // accumulated token usage from session/prompt and session/update
 	done      chan struct{}
 	doneOnce  sync.Once
 }
@@ -195,13 +196,12 @@ func (r *acpRunner) Start(ctx context.Context, ws Workspace, req StartRequest) (
 // prompt sends session/prompt and finishes the session with the outcome.
 // On success: succeeded + artifacts. On error (process died, context gone):
 // empty outcome — the server's collect() maps it using its flags (abort,
-// timeout, or retryable failure).
 func (s *acpSession) prompt(req StartRequest) {
 	s.mu.Lock()
 	sid := s.acpSID
 	s.mu.Unlock()
 
-	_, err := s.rpc(context.Background(), "session/prompt", map[string]any{
+	res, err := s.rpc(context.Background(), "session/prompt", map[string]any{
 		"sessionId": sid,
 		"prompt": []any{
 			map[string]any{"type": "text", "text": req.Prompt},
@@ -211,7 +211,27 @@ func (s *acpSession) prompt(req StartRequest) {
 		s.finish(RunResult{Outcome: ""}) // server decides
 		return
 	}
-	s.finish(RunResult{Outcome: OutcomeSucceeded, Artifacts: s.artifactsSnapshot()})
+	// Extract usage from session/prompt result if present
+	if res != nil {
+		var promptResult struct {
+			StopReason string `json:"stopReason"`
+			Usage      *struct {
+				PromptTokens     int `json:"promptTokens"`
+				CompletionTokens int `json:"completionTokens"`
+				TotalTokens      int `json:"totalTokens"`
+			} `json:"usage"`
+		}
+		if json.Unmarshal(res, &promptResult) == nil && promptResult.Usage != nil {
+			s.mu.Lock()
+			s.usage = &Usage{
+				PromptTokens:     promptResult.Usage.PromptTokens,
+				CompletionTokens: promptResult.Usage.CompletionTokens,
+				TotalTokens:      promptResult.Usage.TotalTokens,
+			}
+			s.mu.Unlock()
+		}
+	}
+	s.finish(RunResult{Outcome: OutcomeSucceeded, Artifacts: s.artifactsSnapshot(), Usage: s.usageSnapshot()})
 }
 
 // Abort kills the agent process and reaps it. Confirmed-dead (I8): the
@@ -330,12 +350,30 @@ func (s *acpSession) observe(params json.RawMessage) {
 			Status        string          `json:"status"`
 			RawInput      json.RawMessage `json:"rawInput"`
 			RawOutput     json.RawMessage `json:"rawOutput"`
+			Usage         *struct {
+				PromptTokens     int `json:"promptTokens"`
+				CompletionTokens int `json:"completionTokens"`
+				TotalTokens      int `json:"totalTokens"`
+			} `json:"usage,omitempty"`
 		} `json:"update"`
 	}
 	if err := json.Unmarshal(params, &p); err != nil {
 		return
 	}
 	u := p.Update
+
+	// Extract usage if present in the session/update notification
+	if u.Usage != nil {
+		s.mu.Lock()
+		// Accumulate usage across updates (the last one typically has the final total)
+		s.usage = &Usage{
+			PromptTokens:     u.Usage.PromptTokens,
+			CompletionTokens: u.Usage.CompletionTokens,
+			TotalTokens:      u.Usage.TotalTokens,
+		}
+		s.mu.Unlock()
+	}
+
 	if u.SessionUpdate != "tool_call" && u.SessionUpdate != "tool_call_update" {
 		return
 	}
@@ -427,6 +465,19 @@ func (s *acpSession) artifactsSnapshot() []Artifact {
 	return out
 }
 
+func (s *acpSession) usageSnapshot() *Usage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.usage == nil {
+		return nil
+	}
+	return &Usage{
+		PromptTokens:     s.usage.PromptTokens,
+		CompletionTokens: s.usage.CompletionTokens,
+		TotalTokens:      s.usage.TotalTokens,
+	}
+}
+
 // finish records the terminal result exactly once and unblocks Result.
 // The first non-empty outcome wins; an empty outcome is a signal that the
 // agent died and the server must decide (abort/timeout/retryable failure).
@@ -435,6 +486,10 @@ func (s *acpSession) artifactsSnapshot() []Artifact {
 func (s *acpSession) finish(result RunResult) {
 	s.mu.Lock()
 	if s.result.Outcome == "" && len(s.result.Artifacts) == 0 {
+		// If the result doesn't have usage but we have accumulated usage, include it
+		if result.Usage == nil {
+			result.Usage = s.usage
+		}
 		s.result = result
 	}
 	s.mu.Unlock()

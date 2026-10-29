@@ -222,7 +222,8 @@ be a different question: #12 decided the *claim*, not the transport (D40/D41,
 ## 6. Result typing — `GET /runs/{id}` when terminal
 
 `200` with a **typed** result. The outcome vocabulary is the server's; artifacts use exactly the
-locked `ArtifactKind` (`comment` / `pull_request` / `branch` / `report` / `log`).
+locked `ArtifactKind` (`comment` / `pull_request` / `branch` / `report` / `log`). **Optionally
+includes `usage` — token consumption for the run.**
 
 ```json
 {
@@ -236,7 +237,12 @@ locked `ArtifactKind` (`comment` / `pull_request` / `branch` / `report` / `log`)
     { "kind": "pull_request", "uri": "https://github.com/owner/awesome/pull/89", "branch_purpose": null },
     { "kind": "branch", "branch_purpose": "feature", "uri": "https://github.com/owner/awesome/tree/feature/77-add-cache" },
     { "kind": "log", "uri": "artifact-store/run-xyz/run.log", "branch_purpose": null }
-  ]
+  ],
+  "usage": {
+    "prompt_tokens": 1500,
+    "completion_tokens": 3500,
+    "total_tokens": 5000
+  }
 }
 ```
 
@@ -250,6 +256,8 @@ Rules:
 - `timed_out`/`cancelled` runs carry whatever artifacts the remote could preserve before stopping
   (typically `log`, plus `branch`+debug on a failed attempt that crosses the escalation threshold,
   I5).
+- **`usage` is optional:** if the remote does not report token consumption, the field is absent.
+  When present, it enables the global spend ceiling (#69, D37).
 
 **Wire outcome → `AttemptOutcome` mapping (done in the adapter):**
 
@@ -491,6 +499,7 @@ stretch goal.
 | C7 | `422 budget_exceeded` | Maps `non_retryable_failure`; no retry burns budget | §7 |
 | C8 | Unreachable service | Maps `retryable_failure` — never a hang, never a silent success | §7 |
 | C9 | Client aborts a run, then reads the result | Wire says `cancelled`; the **adapter** records `preempted`, which never crosses the wire | §6, I7 |
+| C10 | Read a terminal result with `usage` | Response includes `usage` with `prompt_tokens`, `completion_tokens`, `total_tokens` | §6 |
 
 **What running it proves, and what it does not.** Passing means the adapter and the contract agree on
 the properties that make D14's retries, D24's lease expiry, D16's preemption, and D17's timeouts safe.

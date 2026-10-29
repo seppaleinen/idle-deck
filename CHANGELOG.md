@@ -37,9 +37,21 @@
 - Lease expiry handling: worker now correctly recovers from `ErrLeaseExpired` on Ack/Nack after
   queue reclaim, continues running (TestLeaseExpiryHandling).
 
+### Added
+- Global spend ceiling (Issue #69): per-run `Usage` reporting from remote (`PromptTokens`,
+  `CompletionTokens`, `TotalTokens`); local `spend_ledger` + atomic reservation protocol
+  (`spend_reservations`); ceiling gate in worker dispatch; `status --json` exposes
+  `global_spend { remaining, exhausted }`.
+- Config: `GlobalBudgetTokens` / `IDLE_DECK_GLOBAL_BUDGET_TOKENS` / `--global-budget-tokens`
+  (0–1B, 0 disables, default 0).
+- Remote contract: `Usage` on `RunResult`; conformance C10 (usage present + absent).
+- Store migrations v12 (`spend_ledger`) and v13 (`spend_reservations` with CHECK constraints).
+- 7 worker budget tests covering enforcement, exhaustion, zero budget, nil usage, reservation
+  release on failure/preemption, oversized usage rejection, status JSON.
+
 ### Notes
 - P3 sweep trigger is tracker/ingress scope (local scheduler), not worker scope. The worker
   executes P3 tasks (role `sweep`) identically to other tiers. This is per event-contract §3 and
   ADR 0019 (D43/D44/D45).
 - No cancellation surface; `aborted` outcome is reserved in ontology, not implemented.
-- No global spend ceiling (deferred until remote reports usage).
+- Global spend ceiling now implemented (was deferred in prior entry).

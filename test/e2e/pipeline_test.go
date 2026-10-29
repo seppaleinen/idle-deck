@@ -142,7 +142,7 @@ func TestPipeline_E2E(t *testing.T) {
 	}
 
 	// 7. Run worker
-	w := worker.NewWorker(q, h, sink, policy, 1, 60*time.Second, 5*time.Minute, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	w := worker.NewWorker(q, h, sink, policy, 1, 60*time.Second, 5*time.Minute, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})), 0, q)
 	go w.Run(ctx)
 
 	// 8. Wait for terminal state
@@ -284,7 +284,7 @@ func TestPipeline_E2E_Failure(t *testing.T) {
 	}
 
 	// 7. Run worker
-	w := worker.NewWorker(q, h, sink, policy, 1, 60*time.Second, 5*time.Minute, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	w := worker.NewWorker(q, h, sink, policy, 1, 60*time.Second, 5*time.Minute, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})), 0, q)
 	go w.Run(ctx)
 
 	// 8. Wait for terminal state

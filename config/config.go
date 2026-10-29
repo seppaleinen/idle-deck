@@ -29,6 +29,11 @@ var requiredVars = []string{EnvGitHubToken, EnvRepos, EnvHarnessURL, EnvHarnessT
 // or printed output. Redact replaces them with the literal "<redacted>" (D36).
 var secretFields = []string{"GitHubToken", "HarnessToken"}
 
+// MaxGlobalBudgetTokens is the maximum allowed value for the global spend
+// ceiling (issue #69). This prevents accidental or malicious configuration
+// of an excessively large ceiling.
+const MaxGlobalBudgetTokens = 1_000_000_000
+
 // defaultSweepPrompt is the shipped default for IDLE_DECK_SWEEP_PROMPT (D43).
 // The content is operator-owned; this is the narrow default (operator-surface §4).
 const defaultSweepPrompt = "Scan the repository for `TODO` and `FIXME` markers. For each, report the file, line, the marker's age in days, and whether the surrounding file has changed more recently than the marker was added. Report only markers older than 90 days. Produce a report; make no changes."
@@ -118,6 +123,7 @@ var fields = []fieldMeta{
 	// the probe report not-idle so the worker yields instead of starting a run
 	// that would compete for the same accelerator.
 	{name: "YieldWhenBusy", key: "IDLE_DECK_YIELD_WHEN_BUSY", kind: kindBool, default_: "false", flag: "yield-when-busy"},
+	{name: "GlobalBudgetTokens", key: "IDLE_DECK_GLOBAL_BUDGET_TOKENS", kind: kindInt, default_: "0", flag: "global-budget-tokens"},
 }
 
 // Config holds the resolved idle-deck configuration.
@@ -151,6 +157,7 @@ type Config struct {
 	DashboardAddr       string
 	DashboardActions    bool
 	YieldWhenBusy       bool // D49: capacity gate, default false
+	GlobalBudgetTokens  int  // global spend ceiling in tokens (0 = disabled)
 }
 
 // MissingVarError names the required variables that are absent or empty.
@@ -388,6 +395,12 @@ func Validate(cfg Config) error {
 
 	if cfg.DB == "" {
 		return fmt.Errorf("%s must not be empty", "IDLE_DECK_DB")
+	}
+	if cfg.GlobalBudgetTokens < 0 {
+		return fmt.Errorf("IDLE_DECK_GLOBAL_BUDGET_TOKENS must be >= 0")
+	}
+	if cfg.GlobalBudgetTokens > MaxGlobalBudgetTokens {
+		return fmt.Errorf("IDLE_DECK_GLOBAL_BUDGET_TOKENS must be <= %d, got %d", MaxGlobalBudgetTokens, cfg.GlobalBudgetTokens)
 	}
 	return nil
 }

@@ -1,68 +1,45 @@
-# PR Description: Issue #19 — Worker Composition Root Implementation
+# Summary
 
-## Summary
-Implements the worker composition root — the core pipeline that stitches the three adapter seams
-(Queue, Harness, TrackerSink) with IdlePolicy into a running daemon with idle gating, retry/escalation,
-preemption, exponential backoff, and trigger-label lifecycle.
+Adds a global spend ceiling that stops new work when cumulative remote-reported token usage exceeds a configured budget.
 
-## Changes
+# Changes
 
-### New files
-- `worker/worker.go` — Worker struct, `NewWorker` constructor, `Run(ctx)`, and all loop methods:
-  `runLoop`, `waitIdle`, `buildRunRequest`, `waitForResult`, `handleResult`, `escalate`,
-  `ensureDebugBranch`, `triggerLabelForEvent`, `setEscalationLabels`, `removeTriggerLabel`,
-  `calculateBackoff`, `queueEventsTimer`, `eventsNotify`, `buildDiagnosticsBody`,
-  `mapHarnessArtifacts`.
-- `worker/worker_test.go` — 6 tests with in-process stubs:
-  `TestSuccessP1`, `TestTriggerLabelRemovedOnSuccess`, `TestRetryTwiceThenEscalate`,
-  `TestPreemptionP0OverP2`, `TestLeaseExpiryHandling`, `TestBackoffApplied`.
+## Core feature
+- **Remote contract** (`docs/architecture/remote-contract.md`): `RunResult` gains optional `Usage { PromptTokens, CompletionTokens, TotalTokens }`; conformance suite gains C10 (usage present + absent).
+- **Harness types** (`harness/types.go`, `harness/remote.go`): `Usage` struct + `Valid()` method, `MaxTokensPerRun = 2_000_000` constant; parse usage from terminal responses.
+- **Remote runner** (`remote/runner.go`, `remote/run.go`, `remote/acp.go`): `Usage` on `RunResult`; wire shape `runResponse` includes usage; ACP adapter extracts usage from agent responses.
+- **Configuration** (`config/config.go`, `config/flags.go`): `GlobalBudgetTokens` field + validation (0–1B, 0 disables); `--global-budget-tokens` flag + env var.
+- **Store migrations** (`store/store.go`): v12 `spend_ledger` table; v13 `spend_reservations` table with CHECK constraints.
+- **Queue spend API** (`store/queue.go`): `RecordSpend`, `CumulativeSpend`, `TryReserveSpend`, `ReleaseReservation`.
+- **Worker enforcement** (`worker/worker.go`): `SpendStore` interface; `canDispatch` with atomic reservation + ceiling gate; reservation released on success/failure/preemption.
+- **CLI visibility** (`main.go`): `status --json` includes `global_spend { remaining, exhausted }`.
+- **Test stubs** (`test/stubs/harness.go`): Stub returns usage in terminal response.
+- **Tests** (`worker/worker_test.go`, `test/e2e/pipeline_test.go`): 7 budget tests (enforcement, exhaustion, zero budget, nil usage, reservation release on failure/preemption, oversized usage rejection); constructor calls updated.
 
-### Modified files
-- `store/queue.go` — Added `AttemptCount` method for backoff calculation.
-- `store/store_test.go` — Fixed `TestLeaseExpiryRecordsTimeout` to assert attempt outcome is
-  `timeout` (was not asserting correctly).
-- `main.go` — `runRun` now passes `cfg.RetryBackoffInitial` and `cfg.RetryBackoffMax` to
-  `NewWorker` (previously hardcoded defaults).
+## D-refs
+- **D37**: Budget is a generation-token ceiling; global ceiling is aggregate
+- **D27**: Workspace on remote — remote reports usage from inside the run
+- **D41**: Conformance suite falsifies the seam — C10 proves usage reporting works
+- **D33**: Automatic forward-only migrations at startup
+- **D48/D51**: Draft PRs only, merge on explicit instruction
 
-## Decisions cited
-- **D8** — `max_concurrent_jobs: 1` (worker-side constructor param)
-- **D14** — Two automated retries then escalate (ADR 0009)
-- **D15** — `debug/<task_id>` branch naming (I5 enforcer)
-- **D16** — P0 preempts running P2 (D16, I7)
-- **D17** — Timeout is retryable; preempted consumes no timeout
-- **D24** — Lease semantics: expiry records `timeout`, re-queues, consumes one retry (ADR 0011)
-- **D29** — Label vocabulary (`idle-hotfix`, `idle-ready`, `idle-redo`, `idle-needs-human`)
-- **D37** — Budget/timeouts/backoff (exponential 30s → 10m, `Retry-After` honoured)
-- **I5** — Worker enforces debug branch at escalation
-- **I6** — Retry policy owned by worker
-- **I7** — Preempted is retryable, no timeout consumed
-- **I9** — `idle-redo` → `derived_from`, fresh retry budget
-- **I10** — Escalated stays escalated
-- **I11** — Role derived from tier (P0/P2→`do`, P1→`plan`, P3→`sweep`)
+# Testing
 
-## Testing
-All tests pass:
-```
-go test ./... -race -count=1    # 68 tests pass
-go vet ./...                    # clean
-gofmt -l .                      # clean
-```
+- All existing tests pass (`go test ./...`)
+- 7 new worker budget tests cover:
+  - Ceiling enforcement blocks dispatch when budget exhausted
+  - Zero budget (disabled) allows all work
+  - Nil usage from remote leaves ceiling inactive (backward compatible)
+  - Reservation released on run failure
+  - Reservation released on P0 preemption
+  - Oversized `TotalTokens` (>2M) rejected by validation
+  - `status --json` reports `remaining` and `exhausted` correctly
+- Conformance test C10 verifies usage present + absent cases
 
-Test coverage includes:
-- Success path (P1, P2) with trigger label removal on terminal state (event-contract §6)
-- Retry twice then escalate with diagnostics comment, `idle-needs-human` label, debug branch
-- P0 preemption of running P2 (abort → Nack preempted → re-queue P2 → start P0)
-- Lease expiry handling (records `timeout`, re-queues, worker recovers)
-- Exponential backoff applied between retries (interruptible by Queue.Events)
+# Breaking Changes
 
-## Known limitations
-- **P3 sweep is not a worker concern.** The sweep trigger is a local scheduler tick
-  (event-contract §3, ADR 0019 D43/D44/D45). The worker executes a P3 task identically to
-  other tiers (role `sweep`), but the scheduler that enqueues it lives in the tracker/ingress
-  layer, not here.
-- No cancellation surface (`aborted` outcome is reserved in ontology, not implemented).
-- No global spend ceiling (deferred until remote reports usage, per operator-surface.md §8).
+None. Default `GlobalBudgetTokens=0` disables the ceiling; remotes not reporting `Usage` leave it inactive.
 
-## Verification
-- CI gates: `go build ./...`, `go vet ./...`, `go test ./... -race`, `gofmt -l .` all pass.
-- D-id verification: all cited `D<n>` and `I<n>` resolve in `AGENTS.md` and `docs/ontology.md`.
+# Migration
+
+Automatic forward-only migrations at startup (D33): v12 adds `spend_ledger`, v13 adds `spend_reservations`. No manual steps.

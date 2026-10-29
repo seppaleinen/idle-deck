@@ -45,6 +45,15 @@ type StartRequest struct {
 type RunResult struct {
 	Outcome   AttemptOutcome
 	Artifacts []Artifact
+	Usage     *Usage         // token consumption, nil if the runner does not report usage
+}
+
+// Usage is token consumption for one run, as reported by the runner.
+// Mirrors harness.Usage.
+type Usage struct {
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
 }
 
 // Artifact is a typed artifact produced by a run (I4, I5).

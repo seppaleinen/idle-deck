@@ -431,6 +431,7 @@ func allEnvVars() []string {
 		"IDLE_DECK_DASHBOARD_ADDR",
 		"IDLE_DECK_DASHBOARD_ACTIONS",
 		"IDLE_DECK_YIELD_WHEN_BUSY", // D49
+		"IDLE_DECK_GLOBAL_BUDGET_TOKENS",
 	}
 }
 
@@ -602,6 +603,61 @@ func TestLoad_KeychainFallback(t *testing.T) {
 	}
 	if cfg.HarnessToken != "ht_from_keychain" {
 		t.Errorf("HarnessToken = %q, want ht_from_keychain from Keychain", cfg.HarnessToken)
+	}
+}
+
+// TestGlobalBudgetTokensUpperBound verifies that GlobalBudgetTokens cannot
+// exceed MaxGlobalBudgetTokens (1 billion).
+func TestGlobalBudgetTokensUpperBound(t *testing.T) {
+	clearEnv(t)
+	os.Setenv(EnvGitHubToken, "ghp_test")
+	os.Setenv(EnvRepos, "acme/widgets")
+	os.Setenv(EnvHarnessURL, "https://h.example.com")
+	os.Setenv(EnvHarnessToken, "htok")
+	os.Setenv("IDLE_DECK_GLOBAL_BUDGET_TOKENS", "1000000001") // 1 more than max
+
+	_, err := Load(nil)
+	if err == nil {
+		t.Fatal("expected error for GlobalBudgetTokens > MaxGlobalBudgetTokens")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "IDLE_DECK_GLOBAL_BUDGET_TOKENS") {
+		t.Errorf("error does not name the variable: %s", msg)
+	}
+	if !strings.Contains(msg, "1000000000") {
+		t.Errorf("error does not mention max value: %s", msg)
+	}
+
+	// Valid value at the boundary should pass.
+	os.Setenv("IDLE_DECK_GLOBAL_BUDGET_TOKENS", "1000000000")
+	cfg, err := Load(nil)
+	if err != nil {
+		t.Fatalf("Load failed at boundary: %v", err)
+	}
+	if cfg.GlobalBudgetTokens != 1000000000 {
+		t.Errorf("GlobalBudgetTokens = %d, want 1000000000", cfg.GlobalBudgetTokens)
+	}
+}
+
+// TestGlobalBudgetTokensNegative verifies that GlobalBudgetTokens cannot be negative.
+func TestGlobalBudgetTokensNegative(t *testing.T) {
+	clearEnv(t)
+	os.Setenv(EnvGitHubToken, "ghp_test")
+	os.Setenv(EnvRepos, "acme/widgets")
+	os.Setenv(EnvHarnessURL, "https://h.example.com")
+	os.Setenv(EnvHarnessToken, "htok")
+	os.Setenv("IDLE_DECK_GLOBAL_BUDGET_TOKENS", "-1")
+
+	_, err := Load(nil)
+	if err == nil {
+		t.Fatal("expected error for negative GlobalBudgetTokens")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "IDLE_DECK_GLOBAL_BUDGET_TOKENS") {
+		t.Errorf("error does not name the variable: %s", msg)
+	}
+	if !strings.Contains(msg, ">= 0") {
+		t.Errorf("error does not mention lower bound: %s", msg)
 	}
 }
 

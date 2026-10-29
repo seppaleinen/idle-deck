@@ -22,6 +22,43 @@ type RunRequest struct {
 type RunResult struct {
 	Outcome   AttemptOutcome // succeeded | retryable_failure | non_retryable_failure | timeout | preempted
 	Artifacts []Artifact     // pull_request | branch | comment | report | log
+	Usage     *Usage         // token consumption, nil if the remote does not report usage
+}
+
+// MaxTokensPerRun is the maximum token count accepted per run. Any usage
+// reporting more than this is rejected as a DoS attempt (issue #69).
+const MaxTokensPerRun = 10_000_000
+
+// Usage is token consumption for one run, as reported by the remote.
+type Usage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+}
+
+// Valid returns true if the usage values are sane. It rejects negative
+// values, totals exceeding MaxTokensPerRun, and totals that don't match
+// the sum of prompt + completion (allowing a small slack for remote
+// accounting differences).
+func (u *Usage) Valid() bool {
+	if u == nil {
+		return false
+	}
+	if u.PromptTokens < 0 || u.CompletionTokens < 0 || u.TotalTokens < 0 {
+		return false
+	}
+	if u.TotalTokens > MaxTokensPerRun {
+		return false
+	}
+	// Allow up to 10% slack for remote accounting differences (e.g. cached tokens).
+	sum := u.PromptTokens + u.CompletionTokens
+	if u.TotalTokens > sum+sum/10 {
+		return false
+	}
+	if u.TotalTokens < sum-sum/10 {
+		return false
+	}
+	return true
 }
 
 // Artifact is a typed artifact produced by a remote run.
@@ -75,12 +112,20 @@ const (
 
 // Wire response types — these are the JSON shapes sent over the wire.
 
+// usageResponse is the usage shape in a terminal run response.
+type usageResponse struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+}
+
 // runResponse is the response from POST /v1/runs and GET /v1/runs/{id}.
 type runResponse struct {
 	Status    string           `json:"status"`
 	RunID     string           `json:"run_id,omitempty"`
 	Outcome   *outcomeResponse `json:"outcome,omitempty"`
 	Artifacts []Artifact       `json:"artifacts,omitempty"`
+	Usage     *usageResponse   `json:"usage,omitempty"`
 }
 
 // outcomeResponse is the nested outcome shape within a run response.

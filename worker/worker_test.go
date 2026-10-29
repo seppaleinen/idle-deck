@@ -336,6 +336,104 @@ func (q *stubQueue) CancelTask(ctx context.Context, taskID string) error {
 	return nil
 }
 
+// stubSpendStore implements the spend ledger interface needed for
+// global budget tests. It tracks cumulative spend and allows tests to
+// inject values.
+type stubSpendStore struct {
+	mu           sync.Mutex
+	spent        int64
+	reserved     int64
+	recorded     []spendRecord
+	reservations map[string]int // attemptID -> reserved tokens
+}
+
+type spendRecord struct {
+	taskID           string
+	attemptID        string
+	tier             queue.TaskTier
+	promptTokens     int
+	completionTokens int
+	totalTokens      int
+}
+
+func newStubSpendStore() *stubSpendStore {
+	return &stubSpendStore{
+		spent:        0,
+		reserved:     0,
+		recorded:     nil,
+		reservations: make(map[string]int),
+	}
+}
+
+func (s *stubSpendStore) CumulativeSpend(ctx context.Context) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.spent, nil
+}
+
+func (s *stubSpendStore) TryReserveSpend(ctx context.Context, taskID, attemptID string, delta int, globalBudget int) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if globalBudget <= 0 {
+		return true, nil // ceiling disabled
+	}
+	if delta <= 0 {
+		return false, fmt.Errorf("stub: delta must be positive")
+	}
+	if s.spent+s.reserved+int64(delta) > int64(globalBudget) {
+		return false, nil // would exceed ceiling
+	}
+	s.reserved += int64(delta)
+	s.reservations[attemptID] = delta
+	return true, nil
+}
+
+func (s *stubSpendStore) ReleaseReservation(ctx context.Context, attemptID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if delta, ok := s.reservations[attemptID]; ok {
+		s.reserved -= int64(delta)
+		delete(s.reservations, attemptID)
+	}
+	return nil
+}
+
+func (s *stubSpendStore) RecordSpend(ctx context.Context, taskID, attemptID string, tier queue.TaskTier, usage *harness.Usage) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if usage == nil {
+		// Still release reservation even if no usage reported
+		if delta, ok := s.reservations[attemptID]; ok {
+			s.reserved -= int64(delta)
+			delete(s.reservations, attemptID)
+		}
+		return nil
+	}
+	// Validate usage (mirror the real implementation)
+	if !usage.Valid() {
+		if delta, ok := s.reservations[attemptID]; ok {
+			s.reserved -= int64(delta)
+			delete(s.reservations, attemptID)
+		}
+		return fmt.Errorf("stub: invalid usage")
+	}
+	// Release reservation
+	if delta, ok := s.reservations[attemptID]; ok {
+		s.reserved -= int64(delta)
+		delete(s.reservations, attemptID)
+	}
+	s.spent += int64(usage.TotalTokens)
+	s.recorded = append(s.recorded, spendRecord{
+		taskID:           taskID,
+		attemptID:        attemptID,
+		tier:             tier,
+		promptTokens:     usage.PromptTokens,
+		completionTokens: usage.CompletionTokens,
+		totalTokens:      usage.TotalTokens,
+	})
+	return nil
+}
+
 type stubHarness struct {
 	t              *testing.T
 	mu             sync.Mutex
@@ -582,7 +680,7 @@ func TestSuccessP1(t *testing.T) {
 	policy := newStubPolicy(true, nil)
 
 	log := slog.New(slog.DiscardHandler)
-	w := NewWorker(q, h, sink, policy, 1, 30*time.Second, 10*time.Minute, log)
+	w := NewWorker(q, h, sink, policy, 1, 30*time.Second, 10*time.Minute, log, 0, nil)
 
 	task := makeTaskWithTrigger("t1", queue.TierP1, "issue.opened")
 	if err := q.Enqueue(ctx, task); err != nil {
@@ -670,7 +768,7 @@ func TestTriggerLabelRemovedOnSuccess(t *testing.T) {
 	policy := newStubPolicy(true, nil)
 
 	log := slog.New(slog.DiscardHandler)
-	w := NewWorker(q, h, sink, policy, 1, 30*time.Second, 10*time.Minute, log)
+	w := NewWorker(q, h, sink, policy, 1, 30*time.Second, 10*time.Minute, log, 0, nil)
 
 	// P2 task with the real tracker event type for idle-ready.
 	task := makeTaskWithTrigger("t-trigger", queue.TierP2, "issue.labeled:idle-ready")
@@ -743,7 +841,7 @@ func TestRetryTwiceThenEscalate(t *testing.T) {
 	policy := newStubPolicy(true, nil)
 
 	log := slog.New(slog.DiscardHandler)
-	w := NewWorker(q, h, sink, policy, 1, 10*time.Millisecond, 100*time.Millisecond, log)
+	w := NewWorker(q, h, sink, policy, 1, 10*time.Millisecond, 100*time.Millisecond, log, 0, nil)
 
 	task := makeTask("t2", queue.TierP2)
 	if err := q.Enqueue(ctx, task); err != nil {
@@ -833,7 +931,7 @@ func TestPreemptionP0OverP2(t *testing.T) {
 	policy := newStubPolicy(true, nil)
 
 	log := slog.New(slog.DiscardHandler)
-	w := NewWorker(q, h, sink, policy, 1, 30*time.Second, 10*time.Minute, log)
+	w := NewWorker(q, h, sink, policy, 1, 30*time.Second, 10*time.Minute, log, 0, nil)
 
 	// Block all harness results so the P2 run cannot complete before the
 	// worker's waitForResult drain+select loop has observed a higher-tier
@@ -981,7 +1079,7 @@ func TestLeaseExpiryHandling(t *testing.T) {
 	policy := newStubPolicy(true, nil)
 
 	log := slog.New(slog.DiscardHandler)
-	w := NewWorker(q, h, sink, policy, 1, 30*time.Second, 10*time.Minute, log)
+	w := NewWorker(q, h, sink, policy, 1, 30*time.Second, 10*time.Minute, log, 0, nil)
 
 	task := makeTask("t-lease", queue.TierP1)
 	if err := q.Enqueue(ctx, task); err != nil {
@@ -1071,7 +1169,7 @@ func TestBackoffApplied(t *testing.T) {
 	backoffMax := 500 * time.Millisecond
 
 	log := slog.New(slog.DiscardHandler)
-	w := NewWorker(q, h, sink, policy, 1, backoffInitial, backoffMax, log)
+	w := NewWorker(q, h, sink, policy, 1, backoffInitial, backoffMax, log, 0, nil)
 
 	task := makeTask("t-backoff", queue.TierP1)
 	if err := q.Enqueue(ctx, task); err != nil {
@@ -1188,7 +1286,7 @@ func TestSweepSucceedsWithReportFindings(t *testing.T) {
 	policy := newStubPolicy(true, nil)
 
 	log := slog.New(slog.DiscardHandler)
-	w := NewWorker(q, h, sink, policy, 1, 30*time.Second, 10*time.Minute, log)
+	w := NewWorker(q, h, sink, policy, 1, 30*time.Second, 10*time.Minute, log, 0, nil)
 
 	task := makeSweepTask("t-sweep")
 	if err := q.Enqueue(ctx, task); err != nil {
@@ -1270,7 +1368,7 @@ func TestSweepPullRequestViolation(t *testing.T) {
 	policy := newStubPolicy(true, nil)
 
 	log := slog.New(slog.DiscardHandler)
-	w := NewWorker(q, h, sink, policy, 1, 30*time.Second, 10*time.Minute, log)
+	w := NewWorker(q, h, sink, policy, 1, 30*time.Second, 10*time.Minute, log, 0, nil)
 
 	task := makeSweepTask("t-sweep-pr")
 	if err := q.Enqueue(ctx, task); err != nil {
@@ -1337,7 +1435,7 @@ func TestSweepFeatureBranchViolation(t *testing.T) {
 	policy := newStubPolicy(true, nil)
 
 	log := slog.New(slog.DiscardHandler)
-	w := NewWorker(q, h, sink, policy, 1, 30*time.Second, 10*time.Minute, log)
+	w := NewWorker(q, h, sink, policy, 1, 30*time.Second, 10*time.Minute, log, 0, nil)
 
 	task := makeSweepTask("t-sweep-branch")
 	if err := q.Enqueue(ctx, task); err != nil {
@@ -1404,7 +1502,7 @@ func TestSweepNeverEscalates(t *testing.T) {
 	policy := newStubPolicy(true, nil)
 
 	log := slog.New(slog.DiscardHandler)
-	w := NewWorker(q, h, sink, policy, 1, 30*time.Second, 10*time.Minute, log)
+	w := NewWorker(q, h, sink, policy, 1, 30*time.Second, 10*time.Minute, log, 0, nil)
 
 	task := makeSweepTask("t-sweep-fail")
 	if err := q.Enqueue(ctx, task); err != nil {
@@ -1478,4 +1576,320 @@ func (s *stubSink) OpenIssueCalls() []struct {
 		body   string
 		labels []string
 	}{}, s.openIssues...)
+}
+
+// =====================================================================
+// Global budget ceiling tests
+// =====================================================================
+
+func TestCanDispatchAllowsWhenCeilingDisabled(t *testing.T) {
+	ctx := context.Background()
+	q := newStubQueue(t)
+	h := newStubHarness(t)
+	sink := newStubSink(t)
+	policy := newStubPolicy(true, nil)
+	log := slog.New(slog.DiscardHandler)
+	spendStore := newStubSpendStore()
+
+	// globalBudget=0 means ceiling disabled
+	w := NewWorker(q, h, sink, policy, 1, 30*time.Second, 10*time.Minute, log, 0, spendStore)
+
+	allowed, err := w.canDispatch(ctx)
+	if err != nil {
+		t.Fatalf("canDispatch error: %v", err)
+	}
+	if !allowed {
+		t.Error("expected allowed=true when ceiling disabled (globalBudget=0)")
+	}
+}
+
+func TestCanDispatchAllowsWhenSpendStoreNil(t *testing.T) {
+	ctx := context.Background()
+	q := newStubQueue(t)
+	h := newStubHarness(t)
+	sink := newStubSink(t)
+	policy := newStubPolicy(true, nil)
+	log := slog.New(slog.DiscardHandler)
+
+	// spendStore=nil means no spend tracking
+	w := NewWorker(q, h, sink, policy, 1, 30*time.Second, 10*time.Minute, log, 1000, nil)
+
+	allowed, err := w.canDispatch(ctx)
+	if err != nil {
+		t.Fatalf("canDispatch error: %v", err)
+	}
+	if !allowed {
+		t.Error("expected allowed=true when spendStore is nil")
+	}
+}
+
+func TestCanDispatchAllowsWhenUnderCeiling(t *testing.T) {
+	ctx := context.Background()
+	q := newStubQueue(t)
+	h := newStubHarness(t)
+	sink := newStubSink(t)
+	policy := newStubPolicy(true, nil)
+	log := slog.New(slog.DiscardHandler)
+	spendStore := newStubSpendStore()
+
+	w := NewWorker(q, h, sink, policy, 1, 30*time.Second, 10*time.Minute, log, 10000, spendStore)
+
+	// Inject spend of 5000 (under ceiling of 10000)
+	spendStore.spent = 5000
+
+	allowed, err := w.canDispatch(ctx)
+	if err != nil {
+		t.Fatalf("canDispatch error: %v", err)
+	}
+	if !allowed {
+		t.Errorf("expected allowed=true when spent (%d) < ceiling (%d)", spendStore.spent, 10000)
+	}
+}
+
+func TestCanDispatchDeniesWhenAtCeiling(t *testing.T) {
+	ctx := context.Background()
+	q := newStubQueue(t)
+	h := newStubHarness(t)
+	sink := newStubSink(t)
+	policy := newStubPolicy(true, nil)
+	log := slog.New(slog.DiscardHandler)
+	spendStore := newStubSpendStore()
+
+	w := NewWorker(q, h, sink, policy, 1, 30*time.Second, 10*time.Minute, log, 10000, spendStore)
+
+	// Inject spend exactly at ceiling
+	spendStore.spent = 10000
+
+	allowed, err := w.canDispatch(ctx)
+	if err != nil {
+		t.Fatalf("canDispatch error: %v", err)
+	}
+	if allowed {
+		t.Error("expected allowed=false when spent == ceiling")
+	}
+}
+
+func TestCanDispatchDeniesWhenOverCeiling(t *testing.T) {
+	ctx := context.Background()
+	q := newStubQueue(t)
+	h := newStubHarness(t)
+	sink := newStubSink(t)
+	policy := newStubPolicy(true, nil)
+	log := slog.New(slog.DiscardHandler)
+	spendStore := newStubSpendStore()
+
+	w := NewWorker(q, h, sink, policy, 1, 30*time.Second, 10*time.Minute, log, 10000, spendStore)
+
+	// Inject spend over ceiling
+	spendStore.spent = 15000
+
+	allowed, err := w.canDispatch(ctx)
+	if err != nil {
+		t.Fatalf("canDispatch error: %v", err)
+	}
+	if allowed {
+		t.Error("expected allowed=false when spent > ceiling")
+	}
+}
+
+func TestWorkerPausesWhenCeilingReached(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
+	q := newStubQueue(t)
+	h := newStubHarness(t)
+	sink := newStubSink(t)
+	policy := newStubPolicy(true, nil)
+	log := slog.New(slog.DiscardHandler)
+	spendStore := newStubSpendStore()
+
+	// Ceiling of 5000 tokens
+	w := NewWorker(q, h, sink, policy, 1, 10*time.Millisecond, 100*time.Millisecond, log, 5000, spendStore)
+
+	// Enqueue a task
+	task := makeTask("t-budget", queue.TierP1)
+	if err := q.Enqueue(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		_ = w.Run(ctx)
+		close(done)
+	}()
+
+	// Wait for first dequeue and completion
+	time.Sleep(100 * time.Millisecond)
+	q.mu.Lock()
+	atts := q.attempts["t-budget"]
+	q.mu.Unlock()
+	if len(atts) == 0 {
+		cancel()
+		t.Fatal("task was never dequeued")
+	}
+	attemptID := atts[len(atts)-1].ID
+	runID := harness.RunID("run-" + attemptID)
+
+	// First attempt succeeds with 4000 tokens
+	h.SetOutcome(string(runID), harness.OutcomeSucceeded, []harness.Artifact{
+		{Kind: "pull_request", URI: "https://github.com/repo/pull/1"},
+	})
+	// Manually inject usage via spendStore
+	spendStore.RecordSpend(ctx, "t-budget", attemptID, queue.TierP1, &harness.Usage{
+		PromptTokens:     1500,
+		CompletionTokens: 2500,
+		TotalTokens:      4000,
+	})
+
+	// Wait for task to succeed
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		taskResult, _ := q.GetTask(ctx, "t-budget")
+		if taskResult.State == queue.StateSucceeded {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// Now spent = 4000, ceiling = 5000. Enqueue another task.
+	task2 := makeTask("t-budget-2", queue.TierP1)
+	if err := q.Enqueue(ctx, task2); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for second task to be dequeued
+	deadline = time.Now().Add(3 * time.Second)
+	var secondDequeued bool
+	for time.Now().Before(deadline) {
+		taskResult, _ := q.GetTask(ctx, "t-budget-2")
+		if taskResult.State == queue.StateRunning {
+			secondDequeued = true
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !secondDequeued {
+		t.Fatal("second task was not dequeued")
+	}
+
+	// Second attempt succeeds with 2000 tokens (total would be 6000 > 5000)
+	q.mu.Lock()
+	atts2 := q.attempts["t-budget-2"]
+	q.mu.Unlock()
+	if len(atts2) == 0 {
+		cancel()
+		t.Fatal("second task was never dequeued")
+	}
+	attemptID2 := atts2[len(atts2)-1].ID
+	runID2 := harness.RunID("run-" + attemptID2)
+
+	h.SetOutcome(string(runID2), harness.OutcomeSucceeded, []harness.Artifact{
+		{Kind: "pull_request", URI: "https://github.com/repo/pull/2"},
+	})
+	spendStore.RecordSpend(ctx, "t-budget-2", attemptID2, queue.TierP1, &harness.Usage{
+		PromptTokens:     500,
+		CompletionTokens: 1500,
+		TotalTokens:      2000,
+	})
+
+	// Wait for second task to succeed
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		taskResult, _ := q.GetTask(ctx, "t-budget-2")
+		if taskResult.State == queue.StateSucceeded {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// Now spent = 6000, ceiling = 5000 (exhausted). Enqueue third task.
+	task3 := makeTask("t-budget-3", queue.TierP1)
+	if err := q.Enqueue(ctx, task3); err != nil {
+		t.Fatal(err)
+	}
+
+	// The third task should NOT be dequeued because the ceiling is exhausted.
+	// Wait a short time and verify it's still queued.
+	time.Sleep(500 * time.Millisecond)
+	taskResult, _ := q.GetTask(ctx, "t-budget-3")
+	if taskResult.State != queue.StateQueued {
+		t.Errorf("expected third task to remain queued (ceiling exhausted), got %s", taskResult.State)
+	}
+
+	// Now simulate a human increasing the ceiling by adding more budget
+	// (or more realistically, the operator would increase the ceiling)
+	// For this test, we directly increase the ceiling by adjusting spendStore
+	// but the worker reads from spendStore which already has 6000 spent.
+	// To simulate ceiling increase, we'd need a different mechanism.
+	// The test's purpose is to verify the worker pauses when ceiling is reached.
+	// The pause behavior is verified by the task staying queued.
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+	}
+}
+
+func TestWorkerResumesWhenCeilingIncreased(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	q := newStubQueue(t)
+	h := newStubHarness(t)
+	sink := newStubSink(t)
+	policy := newStubPolicy(true, nil)
+	log := slog.New(slog.DiscardHandler)
+	spendStore := newStubSpendStore()
+
+	// Start with ceiling 5000
+	w := NewWorker(q, h, sink, policy, 1, 10*time.Millisecond, 100*time.Millisecond, log, 5000, spendStore)
+
+	// Exhaust the ceiling immediately
+	spendStore.spent = 6000
+
+	// Enqueue a task - should stay queued
+	task := makeTask("t-resume", queue.TierP1)
+	if err := q.Enqueue(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		_ = w.Run(ctx)
+		close(done)
+	}()
+
+	// Wait and verify task stays queued
+	time.Sleep(500 * time.Millisecond)
+	taskResult, _ := q.GetTask(ctx, "t-resume")
+	if taskResult.State != queue.StateQueued {
+		t.Errorf("expected task to remain queued when ceiling exhausted, got %s", taskResult.State)
+	}
+
+	// Now simulate ceiling increase by reducing recorded spend
+	// (in reality, operator would increase the ceiling config and restart)
+	// For this test, we adjust the spendStore directly
+	spendStore.spent = 3000
+
+	// Task should now be dequeued after the worker's 10s sleep cycle
+	deadline := time.Now().Add(12 * time.Second)
+	var dequeued bool
+	for time.Now().Before(deadline) {
+		taskResult, _ = q.GetTask(ctx, "t-resume")
+		if taskResult.State == queue.StateRunning {
+			dequeued = true
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !dequeued {
+		t.Error("expected task to be dequeued after ceiling effectively increased")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+	}
 }
