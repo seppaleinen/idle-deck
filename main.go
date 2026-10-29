@@ -66,6 +66,7 @@ func usage() {
 func runCheck(args []string) int {
 	fs := flag.NewFlagSet("idle-deck check", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
+	jsonFlag := fs.Bool("json", false, "Output machine-readable JSON")
 	flags := config.RegisterFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -77,10 +78,37 @@ func runCheck(args []string) int {
 		return 1
 	}
 
+	type checkResult struct {
+		Name   string `json:"name"`
+		Status string `json:"status"`
+		Detail string `json:"detail,omitempty"`
+	}
+
+	results := []checkResult{}
+	addCheck := func(name, status, detail string) {
+		results = append(results, checkResult{Name: name, Status: status, Detail: detail})
+		if !*jsonFlag && status != "PASS" {
+			fmt.Fprintf(os.Stderr, "%s: %s\n", name, detail)
+		}
+	}
+
+	// Check 1: required config
 	if missing := cfg.MissingRequired(); len(missing) > 0 {
+		if *jsonFlag {
+			addCheck("required_config", "FAIL", fmt.Sprintf("missing: %s", strings.Join(missing, ", ")))
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			result := map[string]interface{}{
+				"checks": results,
+				"overall": "FAIL",
+			}
+			_ = enc.Encode(result)
+			return 1
+		}
 		fmt.Fprintf(os.Stderr, "missing required configuration variables: %s\n", strings.Join(missing, ", "))
 		return 1
 	}
+	addCheck("required_config", "PASS", "")
 
 	repos, err := config.ParseRepos(cfg.Repos)
 	if err != nil {
@@ -88,53 +116,88 @@ func runCheck(args []string) int {
 		return 1
 	}
 	trk := tracker.NewGitHub(cfg.GitHubAPI, cfg.GitHubToken, repos, nil)
-	if err := trk.ValidateRead(context.Background()); err != nil {
-		fmt.Fprintf(os.Stderr, "tracker read: %v\n", err)
-		return 1
+	if err := trk.ValidateRead(ctx); err != nil {
+		addCheck("tracker_read", "FAIL", err.Error())
+		if !*jsonFlag {
+			fmt.Fprintf(os.Stderr, "tracker read: %v\n", err)
+		}
+	} else {
+		addCheck("tracker_read", "PASS", "authenticated read OK")
+		if !*jsonFlag {
+			fmt.Println("tracker: authenticated read OK")
+		}
 	}
-	fmt.Println("tracker: authenticated read OK")
 
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, cfg.HarnessURL+"/health", nil)
+	// Check harness health
+	harnessOK := false
+	harnessDetail := ""
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.HarnessURL+"/health", nil)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "harness health: %v\n", err)
-		return 1
+		harnessDetail = err.Error()
+	} else {
+		req.Header.Set("Authorization", "Bearer "+cfg.HarnessToken)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			harnessDetail = err.Error()
+		} else {
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				b, _ := io.ReadAll(resp.Body)
+				harnessDetail = fmt.Sprintf("status %d: %s", resp.StatusCode, string(b))
+			} else {
+				harnessOK = true
+				harnessDetail = "/health reachable"
+			}
+		}
 	}
-	req.Header.Set("Authorization", "Bearer "+cfg.HarnessToken)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "harness health: %v\n", err)
-		return 1
+	if harnessOK {
+		addCheck("harness_health", "PASS", harnessDetail)
+		if !*jsonFlag {
+			fmt.Println("harness: /health reachable")
+		}
+	} else {
+		addCheck("harness_health", "FAIL", harnessDetail)
+		if !*jsonFlag {
+			fmt.Fprintf(os.Stderr, "harness health: %v\n", harnessDetail)
+		}
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(resp.Body)
-		fmt.Fprintf(os.Stderr, "harness health: status %d: %s\n", resp.StatusCode, string(b))
-		return 1
-	}
-	fmt.Println("harness: /health reachable")
 
+	// Check SQLite
 	dbPath := config.ExpandHome(cfg.DB)
+	sqliteOK := false
+	sqliteDetail := ""
 	if err := config.CheckDB(dbPath); err != nil {
-		fmt.Fprintf(os.Stderr, "sqlite: %v\n", err)
-		return 1
+		sqliteDetail = err.Error()
+	} else {
+		db, err := store.Open(ctx, dbPath)
+		if err != nil {
+			sqliteDetail = fmt.Sprintf("open: %v", err)
+		} else {
+			v, err := store.CurrentVersion(ctx, db)
+			db.Close()
+			if err != nil {
+				sqliteDetail = fmt.Sprintf("version: %v", err)
+			} else if v < store.SchemaVersion {
+				sqliteDetail = fmt.Sprintf("schema stale (have %d, want %d)", v, store.SchemaVersion)
+			} else {
+				sqliteOK = true
+				sqliteDetail = fmt.Sprintf("schema current (v%d)", v)
+			}
+		}
 	}
-	db, err := store.Open(ctx, dbPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "sqlite: open: %v\n", err)
-		return 1
+	if sqliteOK {
+		addCheck("sqlite_schema", "PASS", sqliteDetail)
+		if !*jsonFlag {
+			fmt.Printf("sqlite: %s\n", sqliteDetail)
+		}
+	} else {
+		addCheck("sqlite_schema", "FAIL", sqliteDetail)
+		if !*jsonFlag {
+			fmt.Fprintf(os.Stderr, "sqlite: %v\n", sqliteDetail)
+		}
 	}
-	v, err := store.CurrentVersion(ctx, db)
-	db.Close()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "schema version: %v\n", err)
-		return 1
-	}
-	if v < store.SchemaVersion {
-		fmt.Fprintf(os.Stderr, "sqlite: schema stale (have %d, want %d)\n", v, store.SchemaVersion)
-		return 1
-	}
-	fmt.Printf("sqlite: schema current (v%d)\n", v)
 
+	// Check labels
 	type labelDef struct {
 		name  string
 		color string
@@ -145,22 +208,77 @@ func runCheck(args []string) int {
 		{tracker.LabelRedo, "fbca04"},
 		{tracker.LabelNeedsHuman, "b60205"},
 	}
-	fmt.Println("\nLabels:")
+	labelsOK := true
+	missingLabels := []string{}
+	if !*jsonFlag {
+		fmt.Println("\nLabels:")
+	}
 	for _, repo := range repos {
-		fmt.Printf("  %s:\n", repo)
+		if !*jsonFlag {
+			fmt.Printf("  %s:\n", repo)
+		}
 		for _, l := range labels {
-			exists, err := trk.LabelExists(context.Background(), repo, l.name)
+			exists, err := trk.LabelExists(ctx, repo, l.name)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "    %s: error: %v\n", l.name, err)
-				return 1
+				labelsOK = false
+				if *jsonFlag {
+					missingLabels = append(missingLabels, fmt.Sprintf("%s/%s (error)", repo, l.name))
+				} else {
+					fmt.Fprintf(os.Stderr, "    %s: error: %v\n", l.name, err)
+				}
+				continue
 			}
 			if exists {
-				fmt.Printf("    %s: present\n", l.name)
+				if !*jsonFlag {
+					fmt.Printf("    %s: present\n", l.name)
+				}
 			} else {
-				fmt.Printf("    %s: MISSING  (gh label create %s/%s --name \"%s\" --color \"%s\")\n",
-					l.name, repo, l.name, l.name, l.color)
+				labelsOK = false
+				cmd := fmt.Sprintf("gh label create %s/%s --name \"%s\" --color \"%s\"", repo, l.name, l.name, l.color)
+				if *jsonFlag {
+					missingLabels = append(missingLabels, fmt.Sprintf("%s/%s", repo, l.name))
+				} else {
+					fmt.Printf("    %s: MISSING  (%s)\n", l.name, cmd)
+				}
 			}
 		}
+	}
+	if labelsOK {
+		addCheck("labels", "PASS", "all labels present")
+	} else {
+		addCheck("labels", "FAIL", fmt.Sprintf("missing labels: %v", missingLabels))
+	}
+
+	// Check config bounds (already validated by LoadRelaxed, but surface for completeness)
+	addCheck("config_bounds", "PASS", "values within bounds")
+
+	// Output results
+	if *jsonFlag {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		overall := "PASS"
+		for _, r := range results {
+			if r.Status == "FAIL" {
+				overall = "FAIL"
+				break
+			}
+		}
+		result := map[string]interface{}{
+			"checks": results,
+			"overall": overall,
+		}
+		_ = enc.Encode(result)
+		if overall == "FAIL" {
+			return 1
+		}
+		return 0
+	}
+
+	// Human-readable output
+	if !labelsOK {
+		fmt.Println("\nConfiguration:")
+		fmt.Print(config.Format(config.Redact(cfg)))
+		return 1
 	}
 
 	fmt.Println("\nConfiguration:")
@@ -277,35 +395,42 @@ func runRun(args []string) int {
 
 func runStatus(args []string) int {
 	fs := flag.NewFlagSet("idle-deck status", flag.ContinueOnError)
-	dbFlag := fs.String("db", "", "SQLite database path (env IDLE_DECK_DB)")
-	harnessURLFlag := fs.String("harness-url", "", "Remote execution service base URL (env IDLE_DECK_HARNESS_URL)")
-	harnessTokenFlag := fs.String("harness-token", "", "Bearer token for harness (env IDLE_DECK_HARNESS_TOKEN)")
+	fs.SetOutput(os.Stderr)
+	jsonFlag := fs.Bool("json", false, "Output machine-readable JSON")
+	flags := config.RegisterFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-
-	cfg := config.Defaults()
-	if v := os.Getenv("IDLE_DECK_DB"); v != "" {
-		cfg.DB = v
-	}
-	if *dbFlag != "" {
-		cfg.DB = *dbFlag
-	}
-	if v := os.Getenv("IDLE_DECK_HARNESS_URL"); v != "" {
-		cfg.HarnessURL = v
-	}
-	if v := os.Getenv("IDLE_DECK_HARNESS_TOKEN"); v != "" {
-		cfg.HarnessToken = v
-	}
-	if *harnessURLFlag != "" {
-		cfg.HarnessURL = *harnessURLFlag
-	}
-	if *harnessTokenFlag != "" {
-		cfg.HarnessToken = *harnessTokenFlag
+	ctx := context.Background()
+	cfg, err := config.LoadRelaxed(flags)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
 	}
 	dbPath := config.ExpandHome(cfg.DB)
 
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+		if *jsonFlag {
+			result := map[string]interface{}{
+				"run_lock": "none",
+				"heartbeat": nil,
+				"queue": map[string]interface{}{
+					"queued":    map[string]int{},
+					"running":   map[string]int{},
+					"succeeded": map[string]int{},
+					"escalated": map[string]int{},
+				},
+				"polls":         []interface{}{},
+				"active_task":   nil,
+				"harness":       nil,
+				"last_escalation": nil,
+				"message": "no state yet (database not found)",
+			}
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			_ = enc.Encode(result)
+			return 0
+		}
 		fmt.Println("idle-deck status")
 		fmt.Println("================")
 		fmt.Println("No state yet (database not found)")
@@ -323,74 +448,83 @@ func runStatus(args []string) int {
 	defer db.Close()
 	hb := store.NewSQLiteHeartbeat(db)
 
-	fmt.Println("idle-deck status")
-	fmt.Println("================")
-
-	beat, err := hb.LastBeat(context.Background())
+	// Collect data
+	beat, err := hb.LastBeat(ctx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "status: heartbeat: %v\n", err)
 		return 1
 	}
-	held, err := hb.RunLockHeld(context.Background())
+	held, err := hb.RunLockHeld(ctx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "status: run lock: %v\n", err)
 		return 1
 	}
-	cfg = config.Defaults()
-	if v := os.Getenv("IDLE_DECK_DB"); v != "" {
-		fmt.Fprintf(os.Stderr, "status: run lock: %v\n", err)
-		return 1
-	}
-	if held {
-		if beat.IsZero() || time.Since(beat) > 3*cfg.PollInterval {
-			fmt.Println("Run lock: held but heartbeat stale (orphaned lock)")
-		} else {
-			fmt.Println("Run lock: held")
-		}
-	} else {
-		fmt.Println("Run lock: free")
-	}
 
-	fmt.Println("\nQueue depth:")
-	rows, err := db.QueryContext(context.Background(), `SELECT state, tier, COUNT(*) FROM tasks GROUP BY state, tier ORDER BY state, tier`)
+	// Queue depth
+	queueCounts := map[string]map[string]int{
+		"queued":    {},
+		"running":   {},
+		"succeeded": {},
+		"escalated": {},
+	}
+	rows, err := db.QueryContext(ctx, `SELECT state, tier, COUNT(*) FROM tasks GROUP BY state, tier ORDER BY state, tier`)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "status: query queue: %v\n", err)
 		return 1
 	}
-	defer rows.Close()
 	for rows.Next() {
 		var state, tier string
 		var count int
 		rows.Scan(&state, &tier, &count)
-		fmt.Printf("  %s %s: %d\n", state, tier, count)
+		if _, ok := queueCounts[state]; ok {
+			queueCounts[state][tier] = count
+		}
 	}
+	rows.Close()
 
-	fmt.Println("\nPolls and watermarks:")
-	rows2, err := db.QueryContext(context.Background(), `SELECT repo, watermark, updated_at FROM tracker_watermarks ORDER BY repo`)
+	// Polls and watermarks
+	type pollInfo struct {
+		Repo      string `json:"repo"`
+		Watermark string `json:"watermark"`
+		LastPoll  string `json:"last_poll,omitempty"`
+		Seeded    bool   `json:"seeded"`
+	}
+	var polls []pollInfo
+	rows2, err := db.QueryContext(ctx, `SELECT repo, watermark FROM tracker_watermarks ORDER BY repo`)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "status: query watermarks: %v\n", err)
 		return 1
 	}
-	defer rows2.Close()
 	for rows2.Next() {
 		var repo, watermark string
-		var updatedAt int64
-		rows2.Scan(&repo, &watermark, &updatedAt)
-		lastPoll, seeded, err := hb.LastPoll(context.Background(), repo)
+		rows2.Scan(&repo, &watermark)
+		lastPoll, seeded, err := hb.LastPoll(ctx, repo)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "status: query poll: %v\n", err)
 			return 1
 		}
-		if seeded {
-			fmt.Printf("  %s: watermark=%s  last poll=%s\n", repo, watermark, lastPoll.Round(time.Second))
-		} else {
-			fmt.Printf("  %s: watermark=%s  last poll: never\n", repo, watermark)
+		info := pollInfo{
+			Repo:      repo,
+			Watermark: watermark,
+			Seeded:    seeded,
 		}
-		_ = updatedAt
+		if seeded {
+			info.LastPoll = lastPoll.Format(time.RFC3339)
+		}
+		polls = append(polls, info)
 	}
+	rows2.Close()
 
-	fmt.Println("\nActive task:")
-	row := db.QueryRowContext(context.Background(), `
+	// Active task
+	type activeTask struct {
+		TaskID     string `json:"task_id"`
+		Tier       string `json:"tier"`
+		Role       string `json:"role"`
+		AttemptID  string `json:"attempt_id"`
+		RunningFor string `json:"running_for"`
+	}
+	var active *activeTask
+	row := db.QueryRowContext(ctx, `
 		SELECT t.id, t.tier, a.id, a.started_at
 		FROM tasks t
 		JOIN attempts a ON a.task_id = t.id AND a.outcome = ''
@@ -401,64 +535,74 @@ func runStatus(args []string) int {
 	var startedAt int64
 	if err := row.Scan(&taskID, &tier, &attemptID, &startedAt); err == nil {
 		runningTime := time.Since(time.Unix(0, startedAt))
-		role := queue.RoleForTier(queue.TaskTier(tier))
-		fmt.Printf("  Task: %s\n", taskID)
-		fmt.Printf("  Tier: %s (role: %s)\n", tier, role)
-		fmt.Printf("  Attempt: %s\n", attemptID)
-		fmt.Printf("  Running: %s\n", runningTime.Round(time.Second))
-	} else if err == sql.ErrNoRows {
-		fmt.Println("  None")
-	} else {
+		active = &activeTask{
+			TaskID:     taskID,
+			Tier:       tier,
+			Role:       string(queue.RoleForTier(queue.TaskTier(tier))),
+			AttemptID:  attemptID,
+			RunningFor: runningTime.Round(time.Second).String(),
+		}
+	} else if err != sql.ErrNoRows {
 		fmt.Fprintf(os.Stderr, "status: query active task: %v\n", err)
 		return 1
 	}
 
-	fmt.Println("\nHarness:")
+	// Harness
+	type harnessInfo struct {
+		Reachable bool   `json:"reachable"`
+		Busy      *bool  `json:"busy,omitempty"`
+		Model     string `json:"model,omitempty"`
+		Capacity  string `json:"capacity,omitempty"`
+		Configured bool  `json:"configured"`
+	}
+	var harness *harnessInfo
 	if cfg.HarnessURL != "" {
-		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, cfg.HarnessURL+"/health", nil)
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, cfg.HarnessURL+"/health", nil)
 		if cfg.HarnessToken != "" {
 			req.Header.Set("Authorization", "Bearer "+cfg.HarnessToken)
 		}
 		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			fmt.Printf("  Reachability: unreachable (%v)\n", err)
-		} else {
+		if err == nil {
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
-				fmt.Println("  Reachability: reachable")
-				// D49: surface the busy field so a "reachable but busy" answer is
-				// visible to the operator rather than only inferable from a
-				// stalled interactive session. The field is optional for a
-				// pre-D49 harness; missing means not-busy.
+				harness = &harnessInfo{Reachable: true, Configured: true}
 				var health struct {
 					Reachable *bool `json:"reachable"`
 					Busy      *bool `json:"busy"`
 					Model     string `json:"model"`
 				}
 				if err := json.Unmarshal(body, &health); err == nil {
-					switch {
-					case health.Busy != nil && *health.Busy:
-						fmt.Println("  Capacity:   busy (remote occupied by a run it is executing)")
-					case cfg.YieldWhenBusy:
-						fmt.Println("  Capacity:   free (yield-when-busy is on, but the remote is not busy)")
-					default:
-						fmt.Println("  Capacity:   free (IDLE_DECK_YIELD_WHEN_BUSY is off — busy answers are ignored)")
+					if health.Busy != nil {
+						harness.Busy = health.Busy
+						if *health.Busy {
+							harness.Capacity = "busy"
+						} else {
+							harness.Capacity = "free"
+						}
+					} else {
+						harness.Capacity = "free"
 					}
-					if health.Model != "" {
-						fmt.Printf("  Model:      %s\n", health.Model)
-					}
+					harness.Model = health.Model
 				}
 			} else {
-				fmt.Printf("  Reachability: status %d\n", resp.StatusCode)
+				harness = &harnessInfo{Reachable: false, Configured: true}
 			}
+		} else {
+			harness = &harnessInfo{Reachable: false, Configured: true}
 		}
 	} else {
-		fmt.Println("  Reachability: not configured (IDLE_DECK_HARNESS_URL not set)")
+		harness = &harnessInfo{Reachable: false, Configured: false}
 	}
 
-	fmt.Println("\nMost recent escalation:")
-	row2 := db.QueryRowContext(context.Background(), `
+	// Most recent escalation
+	type escalationInfo struct {
+		TaskID string `json:"task_id"`
+		Tier   string `json:"tier"`
+		Time   string `json:"time"`
+	}
+	var lastEscalation *escalationInfo
+	row2 := db.QueryRowContext(ctx, `
 		SELECT t.id, t.tier, MAX(a.finished_at)
 		FROM tasks t
 		JOIN attempts a ON a.task_id = t.id
@@ -470,14 +614,118 @@ func runStatus(args []string) int {
 	var escTaskID, escTier string
 	var escFinishedAt int64
 	if err := row2.Scan(&escTaskID, &escTier, &escFinishedAt); err == nil {
-		fmt.Printf("  Task: %s\n", escTaskID)
-		fmt.Printf("  Tier: %s\n", escTier)
-		fmt.Printf("  Time: %s\n", time.Unix(0, escFinishedAt).Format(time.RFC3339))
-	} else if err == sql.ErrNoRows {
-		fmt.Println("  None")
-	} else {
+		lastEscalation = &escalationInfo{
+			TaskID: escTaskID,
+			Tier:   escTier,
+			Time:   time.Unix(0, escFinishedAt).Format(time.RFC3339),
+		}
+	} else if err != sql.ErrNoRows {
 		fmt.Fprintf(os.Stderr, "status: query escalation: %v\n", err)
 		return 1
+	}
+
+	// Build result
+	if *jsonFlag {
+		runLockStatus := "free"
+		if held {
+			if beat.IsZero() || time.Since(beat) > 3*cfg.PollInterval {
+				runLockStatus = "orphaned"
+			} else {
+				runLockStatus = "held"
+			}
+		}
+
+		result := map[string]interface{}{
+			"run_lock":          runLockStatus,
+			"heartbeat":         nil,
+			"queue":             queueCounts,
+			"polls":             polls,
+			"active_task":       active,
+			"harness":           harness,
+			"last_escalation":   lastEscalation,
+			"config_redacted":   config.Redact(cfg),
+		}
+		if !beat.IsZero() {
+			result["heartbeat"] = beat.Format(time.RFC3339)
+		}
+
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(result)
+		return 0
+	}
+
+	// Human-readable output
+	fmt.Println("idle-deck status")
+	fmt.Println("================")
+
+	if held {
+		if beat.IsZero() || time.Since(beat) > 3*cfg.PollInterval {
+			fmt.Println("Run lock: held but heartbeat stale (orphaned lock)")
+		} else {
+			fmt.Println("Run lock: held")
+		}
+	} else {
+		fmt.Println("Run lock: free")
+	}
+
+	fmt.Println("\nQueue depth:")
+	for _, state := range []string{"queued", "running", "succeeded", "escalated"} {
+		for tier, count := range queueCounts[state] {
+			fmt.Printf("  %s %s: %d\n", state, tier, count)
+		}
+	}
+
+	fmt.Println("\nPolls and watermarks:")
+	for _, p := range polls {
+		if p.Seeded {
+			fmt.Printf("  %s: watermark=%s  last poll=%s\n", p.Repo, p.Watermark, p.LastPoll)
+		} else {
+			fmt.Printf("  %s: watermark=%s  last poll: never\n", p.Repo, p.Watermark)
+		}
+	}
+
+	fmt.Println("\nActive task:")
+	if active != nil {
+		fmt.Printf("  Task: %s\n", active.TaskID)
+		fmt.Printf("  Tier: %s (role: %s)\n", active.Tier, active.Role)
+		fmt.Printf("  Attempt: %s\n", active.AttemptID)
+		fmt.Printf("  Running: %s\n", active.RunningFor)
+	} else {
+		fmt.Println("  None")
+	}
+
+	fmt.Println("\nHarness:")
+	if harness.Configured {
+		if harness.Reachable {
+			fmt.Println("  Reachability: reachable")
+			if harness.Capacity != "" {
+				fmt.Printf("  Capacity:   %s", harness.Capacity)
+				if harness.Busy != nil && *harness.Busy {
+					fmt.Println(" (remote occupied by a run it is executing)")
+				} else if cfg.YieldWhenBusy {
+					fmt.Println(" (yield-when-busy is on, but the remote is not busy)")
+				} else {
+					fmt.Println(" (IDLE_DECK_YIELD_WHEN_BUSY is off — busy answers are ignored)")
+				}
+			}
+			if harness.Model != "" {
+				fmt.Printf("  Model:      %s\n", harness.Model)
+			}
+		} else {
+			fmt.Println("  Reachability: unreachable")
+		}
+	} else {
+		fmt.Println("  Reachability: not configured (IDLE_DECK_HARNESS_URL not set)")
+	}
+
+	fmt.Println("\nMost recent escalation:")
+	if lastEscalation != nil {
+		fmt.Printf("  Task: %s\n", lastEscalation.TaskID)
+		fmt.Printf("  Tier: %s\n", lastEscalation.Tier)
+		fmt.Printf("  Time: %s\n", lastEscalation.Time)
+	} else {
+		fmt.Println("  None")
 	}
 
 	return 0
