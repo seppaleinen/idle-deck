@@ -31,6 +31,12 @@ type Poller struct {
 	sweepPrompt  string
 	sweepTimeout int
 	sweepBudget  int
+	// rateLimitBackoff is the current backoff duration imposed by GitHub rate
+	// limiting (429). It is reset to zero when the backoff period expires.
+	rateLimitBackoff time.Duration
+	// rateLimitSeenAt records when the last rate-limit state was observed.
+	// It is used to decide when the stored backoff is stale.
+	rateLimitSeenAt time.Time
 }
 
 // SweepConfig holds optional sweep configuration for the poller.
@@ -79,6 +85,11 @@ func (p *Poller) Tick(ctx context.Context) error {
 	tickStart := p.now()
 	for _, repo := range p.repos {
 		if err := p.pollRepo(ctx, repo, tickStart); err != nil {
+			// On rate-limit (429), do NOT advance the watermark (event-contract §2)
+			// and do NOT fail the tick — continue to the next repo.
+			if errors.Is(err, ErrRateLimited) {
+				continue
+			}
 			// On error, do NOT advance watermark (event-contract §2).
 			return err
 		}
@@ -92,6 +103,37 @@ func (p *Poller) Tick(ctx context.Context) error {
 		return fmt.Errorf("process dashboard actions: %w", err)
 	}
 	return nil
+}
+
+// NextInterval returns the poll interval for the next tick. After a rate-limited
+// tick, this returns the backoff duration until the backoff has elapsed, at which
+// point it resets to the base interval.
+func (p *Poller) NextInterval() time.Duration {
+	if p.rateLimitBackoff > 0 {
+		// If the backoff period has elapsed, reset.
+		if p.now().Sub(p.rateLimitSeenAt) >= p.rateLimitBackoff {
+			p.rateLimitBackoff = 0
+			return p.interval
+		}
+		return p.rateLimitBackoff
+	}
+	return p.interval
+}
+
+// RateLimitState returns the current rate-limit state for a repo.
+func (p *Poller) RateLimitState(repo string) RateLimitState {
+	if p.wm == nil {
+		return RateLimitState{}
+	}
+	remaining, resetAt, retryAfter, err := p.wm.LoadRateLimit(context.Background(), repo)
+	if err != nil {
+		return RateLimitState{}
+	}
+	return RateLimitState{
+		Remaining:  remaining,
+		ResetAt:    time.Unix(0, resetAt),
+		RetryAfter: time.Duration(retryAfter),
+	}
 }
 
 // Sweep enqueues P3 sweep tasks for configured repositories.
@@ -160,17 +202,17 @@ func (p *Poller) Sweep(ctx context.Context) error {
 }
 
 // pollRepo runs the 4 queries for a single repo (event-contract §8).
+// It seeds the watermark on first observation only after all queries succeed.
+// A rate-limited tick does NOT seed the watermark (event-contract §2).
 func (p *Poller) pollRepo(ctx context.Context, repo string, tickStart time.Time) error {
 	wm, seeded, err := p.wm.Load(ctx, repo)
 	if err != nil {
 		return err
 	}
+	// On first tick, use a far-past watermark to catch recent issues.
+	// We seed the watermark AFTER queries succeed so that a rate-limited
+	// tick does not advance the watermark (event-contract §2).
 	if !seeded {
-		// First observation: seed at tick start (event-contract §2).
-		if err := p.wm.Save(ctx, repo, tickStart); err != nil {
-			return err
-		}
-		// On first tick, use a far-past watermark to catch recent issues.
 		wm = tickStart.Add(-24 * time.Hour)
 	}
 
@@ -189,12 +231,24 @@ func (p *Poller) pollRepo(ctx context.Context, repo string, tickStart time.Time)
 	for _, q := range queries {
 		notModified, err := p.runQuery(ctx, repo, wm, q.trigger, q.tier, q.isWatermark)
 		if err != nil {
+			// On rate-limit (429), do NOT advance watermark.
+			// On other errors, propagate and let Tick handle it.
 			return err
 		}
 		// Skip remaining queries if this one returned 304 — repo is quiet
 		if notModified {
 			break
 		}
+	}
+
+	// Watermark advances to tick start AFTER pagination completes.
+	// Also seed on first observation (only reached if all queries succeeded).
+	wmToSave := tickStart
+	if !seeded {
+		wmToSave = tickStart
+	}
+	if err := p.wm.Save(ctx, repo, wmToSave); err != nil {
+		return err
 	}
 	return nil
 }
@@ -240,8 +294,36 @@ func (p *Poller) runQuery(ctx context.Context, repo string, since time.Time, tri
 			return false, err
 		}
 
+		// Extract rate-limit headers regardless of status code (they're present on 200/304/403/429).
+		rlState := parseRateLimitHeaders(resp)
+
+		// On 429: read Retry-After, back off, do NOT fail the tick.
+		// The watermark must NOT advance (event-contract §2).
+		if resp.StatusCode == http.StatusTooManyRequests {
+			resp.Body.Close()
+			rlState.Last429 = p.now()
+			_ = persistRateLimit429(ctx, p.wm, repo, rlState, p.now())
+
+			// Calculate backoff: use Retry-After if present, otherwise default to one base interval.
+			backoff := rlState.RetryAfter
+			if backoff <= 0 {
+				backoff = p.interval
+			}
+			// Cap backoff at 1 hour to avoid pathological values.
+			if backoff > time.Hour {
+				backoff = time.Hour
+			}
+			if backoff > p.rateLimitBackoff {
+				p.rateLimitBackoff = backoff
+				p.rateLimitSeenAt = p.now()
+			}
+
+			return false, ErrRateLimited
+		}
+
 		if resp.StatusCode == http.StatusNotModified {
 			// 304: no new data. Stop pagination and skip remaining queries.
+			_ = persistRateLimit(ctx, p.wm, repo, rlState)
 			resp.Body.Close()
 			notModified = true
 			break
@@ -256,6 +338,20 @@ func (p *Poller) runQuery(ctx context.Context, repo string, since time.Time, tri
 			body, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
 			return false, fmt.Errorf("GitHub API %d: %s", resp.StatusCode, string(body))
+		}
+
+		// Persist rate-limit state on successful responses.
+		_ = persistRateLimit(ctx, p.wm, repo, rlState)
+
+		// When remaining quota is low, scale the poll interval proportionally
+		// rather than hammering. GitHub's default limit is ~5000/hr (~80/min).
+		// We use 100 as the "healthy" threshold; below that we stretch.
+		if rlState.Remaining > 0 && rlState.Remaining < 100 {
+			scaled := scaleIntervalForRemaining(p.interval, rlState.Remaining, 100)
+			if scaled > p.rateLimitBackoff {
+				p.rateLimitBackoff = scaled
+				p.rateLimitSeenAt = p.now()
+			}
 		}
 
 		// Save new ETag from response

@@ -19,7 +19,7 @@ func dsn(path string) string {
 	return path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode=WAL"
 }
 
-const SchemaVersion = 13
+const SchemaVersion = 14
 
 const v1Schema = `
 CREATE TABLE IF NOT EXISTS repositories (
@@ -194,6 +194,20 @@ CREATE TABLE IF NOT EXISTS spend_reservations (
 CREATE INDEX IF NOT EXISTS idx_spend_reservations_task ON spend_reservations (task_id);
 `
 
+// v14AddRateLimitTracker adds the tracker_rate_limits table for persisting
+// GitHub API rate-limit state per repository. This allows the poller to
+// back off intelligently and the status command to display rate-limit health.
+const v14AddRateLimitTracker = `
+CREATE TABLE IF NOT EXISTS tracker_rate_limits (
+    repo        TEXT PRIMARY KEY,
+    remaining   INTEGER,
+    reset_at    INTEGER,
+    last_429    INTEGER,
+    retry_after INTEGER,
+    updated_at  INTEGER NOT NULL
+);
+`
+
 // v9AddUniqueDedupeKey enforces the idempotency invariant: Enqueue is
 // idempotent per dedupe_key, so two tasks with the same key must not coexist.
 // SQLite cannot ALTER TABLE ADD CONSTRAINT, so the tasks table is rebuilt:
@@ -267,6 +281,7 @@ var migrations = []migration{
 	{version: 11, sql: v11AddRepositoryURL},
 	{version: 12, sql: v12AddSpendLedger},
 	{version: 13, sql: v13AddSpendReservations},
+	{version: 14, sql: v14AddRateLimitTracker},
 }
 
 // CurrentVersion returns the schema version recorded in the database.

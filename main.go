@@ -386,6 +386,11 @@ func runRun(args []string) int {
 				if err := poller.Sweep(ctx); err != nil {
 					log.Error("sweep enqueue failed", "err", err)
 				}
+
+				// Adjust tick interval based on GitHub rate-limit state.
+				if next := poller.NextInterval(); next != cfg.PollInterval {
+					ticker.Reset(next)
+				}
 			}
 		}
 	}()
@@ -489,11 +494,18 @@ func runStatus(args []string) int {
 	rows.Close()
 
 	// Polls and watermarks
+	type rateLimitInfo struct {
+		Remaining  int    `json:"remaining"`
+		ResetAt    string `json:"reset_at,omitempty"`
+		Last429    string `json:"last_429,omitempty"`
+		RetryAfter string `json:"retry_after,omitempty"`
+	}
 	type pollInfo struct {
-		Repo      string `json:"repo"`
-		Watermark string `json:"watermark"`
-		LastPoll  string `json:"last_poll,omitempty"`
-		Seeded    bool   `json:"seeded"`
+		Repo      string           `json:"repo"`
+		Watermark string           `json:"watermark"`
+		LastPoll  string           `json:"last_poll,omitempty"`
+		Seeded    bool             `json:"seeded"`
+		RateLimit *rateLimitInfo   `json:"rate_limit,omitempty"`
 	}
 	var polls []pollInfo
 	rows2, err := db.QueryContext(ctx, `SELECT repo, watermark FROM tracker_watermarks ORDER BY repo`)
@@ -516,6 +528,24 @@ func runStatus(args []string) int {
 		}
 		if seeded {
 			info.LastPoll = lastPoll.Format(time.RFC3339)
+		}
+		// Query rate-limit state for this repo.
+		var remaining int
+		var resetAt, last429, retryAfter int64
+		if err := db.QueryRowContext(ctx,
+			`SELECT COALESCE(remaining, 0), COALESCE(reset_at, 0), COALESCE(last_429, 0), COALESCE(retry_after, 0)
+			 FROM tracker_rate_limits WHERE repo = ?`, repo).
+			Scan(&remaining, &resetAt, &last429, &retryAfter); err == nil {
+			info.RateLimit = &rateLimitInfo{Remaining: remaining}
+			if resetAt > 0 {
+				info.RateLimit.ResetAt = time.Unix(0, resetAt).Format(time.RFC3339)
+			}
+			if last429 > 0 {
+				info.RateLimit.Last429 = time.Unix(0, last429).Format(time.RFC3339)
+			}
+			if retryAfter > 0 {
+				info.RateLimit.RetryAfter = time.Duration(retryAfter).String()
+			}
 		}
 		polls = append(polls, info)
 	}
@@ -712,10 +742,23 @@ func runStatus(args []string) int {
 	fmt.Println("\nPolls and watermarks:")
 	for _, p := range polls {
 		if p.Seeded {
-			fmt.Printf("  %s: watermark=%s  last poll=%s\n", p.Repo, p.Watermark, p.LastPoll)
+			fmt.Printf("  %s: watermark=%s  last poll=%s", p.Repo, p.Watermark, p.LastPoll)
 		} else {
-			fmt.Printf("  %s: watermark=%s  last poll: never\n", p.Repo, p.Watermark)
+			fmt.Printf("  %s: watermark=%s  last poll: never", p.Repo, p.Watermark)
 		}
+		if p.RateLimit != nil {
+			fmt.Printf("  rate limit: remaining=%d", p.RateLimit.Remaining)
+			if p.RateLimit.ResetAt != "" {
+				fmt.Printf(", reset=%s", p.RateLimit.ResetAt)
+			}
+			if p.RateLimit.Last429 != "" {
+				fmt.Printf(", last 429=%s", p.RateLimit.Last429)
+			}
+			if p.RateLimit.RetryAfter != "" {
+				fmt.Printf(", retry-after=%s", p.RateLimit.RetryAfter)
+			}
+		}
+		fmt.Println()
 	}
 
 	fmt.Println("\nActive task:")

@@ -664,6 +664,10 @@ type WatermarkStore interface {
 	// SaveETag persists the ETag for a specific query type within a repo.
 	// The ETag is stored alongside the watermark.
 	SaveETag(ctx context.Context, repo string, queryID string, etag string) error
+	// SaveRateLimit persists GitHub API rate-limit state for a repo.
+	SaveRateLimit(ctx context.Context, repo string, remaining int, resetAt int64, retryAfter int64) error
+	// LoadRateLimit returns the last-known rate-limit state for a repo.
+	LoadRateLimit(ctx context.Context, repo string) (remaining int, resetAt int64, retryAfter int64, err error)
 }
 
 // SQLiteWatermarks implements WatermarkStore using the tracker_watermarks table.
@@ -758,6 +762,73 @@ UPDATE tracker_watermarks SET etag = ? WHERE repo = ?`,
 		return fmt.Errorf("watermark: save etag: %w", err)
 	}
 	return nil
+}
+
+// SaveRateLimit persists GitHub API rate-limit state for a repo.
+// remaining is X-RateLimit-Remaining; resetAt is the Unix-nano time the quota
+// resets; retryAfter is the last-observed Retry-After duration in nanoseconds.
+// last_429 is tracked in the table but updated via SaveRateLimit429 below.
+func (w *SQLiteWatermarks) SaveRateLimit(ctx context.Context, repo string, remaining int, resetAt int64, retryAfter int64) error {
+	if w.db == nil {
+		return nil
+	}
+	_, err := w.db.ExecContext(ctx, `
+INSERT INTO tracker_rate_limits (repo, remaining, reset_at, retry_after, updated_at)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(repo) DO UPDATE SET
+    remaining   = excluded.remaining,
+    reset_at    = excluded.reset_at,
+    retry_after = excluded.retry_after,
+    updated_at  = excluded.updated_at`,
+		repo, remaining, resetAt, retryAfter, w.now().UnixNano())
+	if err != nil {
+		return fmt.Errorf("rate limit: save: %w", err)
+	}
+	return nil
+}
+
+// SaveRateLimit429 records that a 429 was observed for a repo, alongside the
+// current remaining/reset state. It also stores the Retry-After duration so
+// the daemon can back off for exactly as long as GitHub asked.
+func (w *SQLiteWatermarks) SaveRateLimit429(ctx context.Context, repo string, remaining int, resetAt int64, retryAfter int64, now int64) error {
+	if w.db == nil {
+		return nil
+	}
+	_, err := w.db.ExecContext(ctx, `
+INSERT INTO tracker_rate_limits (repo, remaining, reset_at, last_429, retry_after, updated_at)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT(repo) DO UPDATE SET
+    remaining   = excluded.remaining,
+    reset_at    = excluded.reset_at,
+    last_429    = excluded.last_429,
+    retry_after = excluded.retry_after,
+    updated_at  = excluded.updated_at`,
+		repo, remaining, resetAt, now, retryAfter, w.now().UnixNano())
+	if err != nil {
+		return fmt.Errorf("rate limit: save 429: %w", err)
+	}
+	return nil
+}
+
+// LoadRateLimit returns the last-known rate-limit state for a repo:
+// remaining (X-RateLimit-Remaining), resetAt (Unix nanos), and retryAfter
+// (nanoseconds). All zero values are returned if no rate-limit state has
+// been observed for the repo yet.
+func (w *SQLiteWatermarks) LoadRateLimit(ctx context.Context, repo string) (remaining int, resetAt int64, retryAfter int64, err error) {
+	if w.db == nil {
+		return 0, 0, 0, fmt.Errorf("rate limit: db is nil")
+	}
+	err = w.db.QueryRowContext(ctx,
+		`SELECT COALESCE(remaining, 0), COALESCE(reset_at, 0), COALESCE(retry_after, 0)
+		 FROM tracker_rate_limits WHERE repo = ?`, repo).
+		Scan(&remaining, &resetAt, &retryAfter)
+	if err == sql.ErrNoRows {
+		return 0, 0, 0, nil
+	}
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("rate limit: load: %w", err)
+	}
+	return remaining, resetAt, retryAfter, nil
 }
 
 // HeartbeatStore provides daemon liveness + run-lock state (operator-surface §6).
