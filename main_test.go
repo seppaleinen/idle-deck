@@ -138,7 +138,7 @@ func TestVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("version exited non-zero: %v\n%s", err, out)
 	}
-	if !strings.Contains(string(out), "idle-deck v0.1.0") {
+	if !strings.Contains(string(out), "idle-deck v0.1.1") {
 		t.Errorf("unexpected version output: %s", out)
 	}
 }
