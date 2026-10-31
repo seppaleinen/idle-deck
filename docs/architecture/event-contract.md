@@ -45,9 +45,20 @@ across five repositories that is ~1,200 requests/hour against a 5,000/hour budge
 requests. Conditional requests reduce this cost — a tick that finds nothing changed returns `304`, which
 **does not consume primary rate limit** — so the cadence is not a tax. Conditional requests are now
 implemented (ETags stored per query type, `If-None-Match` sent on each request, 304 stops pagination
-and skips remaining queries for the tick). Two secondary limits are respected by
-construction: 900 points/minute (a `GET` is 1, a write is 5) and 500 content-generating requests/hour
-(comments and label writes).
+and skips remaining queries for the tick).
+
+**Rate-limit awareness.** A `429` is not a tick failure. idle-deck reads the `Retry-After` header and
+backs off for exactly that duration (capped at one hour; one base interval if the header is absent)
+rather than retrying immediately, and it continues polling the next repository — so one repo hitting
+its limit never stalls the others (the watermark is untouched, §2). The backoff is held by the poller
+and respected by `NextInterval()` until it elapses, after which the poller returns to the base cadence.
+Separately, when a successful response reports a low remaining quota (`< 100` against a 5,000/hour
+budget), the poll interval is scaled proportionally up to 5×, so idle-deck stretches its own cadence
+before it ever needs a `429`. Both behaviors are per-repo state persisted in the watermark store
+(`tracker/rate_limit.go`, `tracker/poller.go`).
+
+Two secondary limits are respected by construction: 900 points/minute (a `GET` is 1, a write is 5) and
+500 content-generating requests/hour (comments and label writes).
 
 ## 1. The allowlist — where I1 is enforced
 
@@ -84,7 +95,9 @@ The mechanics look wrong at first glance and are not:
 - The watermark advances to the tick's **start** timestamp, not its end. Consecutive ticks therefore
   *overlap* by design, and the overlap is free because dedupe is idempotent (§5). Advancing to the
   end would risk skipping an issue that changed mid-tick.
-- A **failed** tick — network error, 5xx, rate limited — does not advance the watermark.
+- A **failed** tick — network error, 5xx, rate limited — does not advance the watermark. A `429` is a
+  *partial* failure, not a tick failure: the poller records the `Retry-After` backoff, leaves the
+  watermark untouched, and continues to the next repository (§0). Only a non-429 error aborts the tick.
 
 **The cursor is adapter state, not a domain entity.** The ontology deliberately has no `Event`
 entity, and `TriggeredBy` records what caused a task that *exists* — not what was skipped. Adding a

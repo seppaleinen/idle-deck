@@ -106,6 +106,7 @@ flips and `Related:` is correctable (**D42**) — the rest is frozen.
 | **D43** | A P3 sweep **files one issue per finding**, labelled `idle-needs-human`, and may **never** open a PR or produce a `feature` branch. Both are non-retryable protocol violations. The sweep's lens is a **configured prompt** with a narrow default (stale TODO/FIXME with age and last-touched context); cadence is `IDLE_DECK_SWEEP_PERIOD` (default `168h`, `0` disables), with `IDLE_DECK_SWEEP_REPOS` as a narrowing subset of the allowlist. No adaptive backoff. | [ADR 0019](docs/adr/0019-p3-sweep-policy.md). **A reporter, not an author**: it finds work, never does it, and the route to a Draft PR runs through a human applying `idle-ready`. The PR ban is D15's corollary — a sweep has no `ticket_id` for the branch name. |
 | **D44** | **`Task.ticket` is required for every tier except P3**, where it is null. | [ADR 0019](docs/adr/0019-p3-sweep-policy.md). Amends the ontology. The task exists when the scheduler ticks, before any run, so no issue exists to point at; the issue a sweep *files* is another task's ticket. |
 | **D45** | **idle-deck never re-ingests an artifact it produced.** P1 skips issues carrying `idle-needs-human`, so a sweep cannot read back its own write. | [ADR 0019](docs/adr/0019-p3-sweep-policy.md). Stated as loop-freedom, not bot-detection: `user.type == "Bot"` is a property of the **credential**, and D4 makes a human account likely. |
+| **D52** | **Rate-limit awareness in the poller.** On `429` idle-deck honours `Retry-After` (capped at 1h; one base interval if absent) and does **not** treat it as a tick failure — the watermark is untouched and polling continues to the next repository, so one repo's limit never stalls the others. When remaining quota is low (`< 100` against a 5,000/hour budget) the poll interval scales proportionally up to 5×. Both are per-repo state in the watermark store (`tracker/rate_limit.go`, `tracker/poller.go`). | Commit `58b9425`. D28 fixed the watermark rule (no advance on failure) but left the *response* to a generic error path; this makes the response explicit, per-repo, and proportional to the quota GitHub actually reports. |
 
 ### Naming and lifecycle conventions
 
@@ -164,8 +165,9 @@ flips and `Related:` is correctable (**D42**) — the rest is frozen.
   trigger label removed on any terminal state, and the prompt is the issue's title and body verbatim.
   **Every tier now has a trigger** — `idle-hotfix` (P0), issue creation (P1), `idle-ready` (P2), a
   local scheduler (P3), `idle-redo` (redefinition); labels are D29. Live cancellation is still open.
-  Cost/rate-limit policy, secrets lifecycle, and label colours are **closed** — D37, D36,
-  and D39 on the operator surface. **What a P3 sweep does is now closed too** — D43/D44/D45,
+  Cost and rate-limit policy is **now closed** — D37 (generation-token budget) and D52 (polling
+  rate-limit backoff) — alongside secrets lifecycle (D36) and label colours (D39) on the operator
+  surface. **What a P3 sweep does is now closed too** — D43/D44/D45,
   [ADR 0019](docs/adr/0019-p3-sweep-policy.md): a sweep is a *reporter*, filing one issue per
   finding, never a PR, never re-ingesting its own write.
 - **The remote contract is locked.** [#8](https://github.com/seppaleinen/idle-deck/issues/8) —

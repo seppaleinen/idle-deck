@@ -3,6 +3,13 @@
 ## [Unreleased] - 2026-10-06
 
 ### Added
+- Rate-limit awareness for polling (commit `58b9425`): GitHub `429` responses are honoured via the
+  `Retry-After` header — the poller backs off for the requested duration (capped at 1h; one base
+  interval if absent), does **not** treat the 429 as a tick failure, and continues polling other
+  repositories with the watermark untouched (event-contract §0/§2). When remaining quota is low
+  (`< 100` against a 5,000/hour budget) the poll interval scales proportionally up to 5×.
+  Rate-limit state (`Remaining`, `ResetAt`, `RetryAfter`) is persisted per repo in the watermark
+  store (`tracker/rate_limit.go`, `tracker/poller.go`).
 - Worker composition root (`worker/worker.go`): core pipeline with idle gate, retry/escalation,
   preemption, exponential backoff, and trigger-label lifecycle (Issue #19).
 - `Worker` struct with four injected dependencies: `Queue`, `Harness`, `TrackerSink`, `IdlePolicy`.

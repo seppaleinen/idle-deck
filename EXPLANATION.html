@@ -1,0 +1,1015 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>idle-deck — What It Is and How It Works</title>
+    <style>
+        :root {
+            --primary: #2563eb;
+            --primary-dark: #1e40af;
+            --secondary: #7c3aed;
+            --accent: #06b6d4;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --danger: #ef4444;
+            --bg: #f8fafc;
+            --card-bg: #ffffff;
+            --text: #1e293b;
+            --text-light: #64748b;
+            --border: #e2e8f0;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            line-height: 1.7;
+            color: var(--text);
+            background: var(--bg);
+            padding: 2rem;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 4rem;
+            padding: 3rem 0;
+            background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
+            border-radius: 1rem;
+            color: white;
+            box-shadow: 0 10px 40px rgba(37, 99, 235, 0.2);
+        }
+
+        header h1 {
+            font-size: 3rem;
+            margin-bottom: 1rem;
+            font-weight: 800;
+        }
+
+        header .tagline {
+            font-size: 1.25rem;
+            opacity: 0.95;
+            max-width: 600px;
+            margin: 0 auto;
+        }
+
+        .version-badge {
+            display: inline-block;
+            background: rgba(255,255,255,0.2);
+            padding: 0.5rem 1rem;
+            border-radius: 2rem;
+            margin-top: 1rem;
+            font-size: 0.9rem;
+        }
+
+        nav.toc {
+            background: var(--card-bg);
+            padding: 2rem;
+            border-radius: 1rem;
+            margin-bottom: 3rem;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+        }
+
+        nav.toc h2 {
+            margin-bottom: 1rem;
+            color: var(--primary);
+        }
+
+        nav.toc ul {
+            list-style: none;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 0.5rem;
+        }
+
+        nav.toc li {
+            padding: 0.5rem 0;
+        }
+
+        nav.toc a {
+            color: var(--text);
+            text-decoration: none;
+            padding: 0.5rem 1rem;
+            border-radius: 0.5rem;
+            display: block;
+            transition: all 0.2s;
+        }
+
+        nav.toc a:hover {
+            background: var(--primary);
+            color: white;
+        }
+
+        section {
+            background: var(--card-bg);
+            padding: 2.5rem;
+            border-radius: 1rem;
+            margin-bottom: 2rem;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+        }
+
+        section.part-1 {
+            border-left: 5px solid var(--primary);
+        }
+
+        section.part-2 {
+            border-left: 5px solid var(--secondary);
+        }
+
+        h2 {
+            font-size: 2rem;
+            margin-bottom: 1.5rem;
+            color: var(--primary);
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        h2 .icon {
+            font-size: 2.5rem;
+        }
+
+        h3 {
+            font-size: 1.5rem;
+            margin: 2rem 0 1rem;
+            color: var(--secondary);
+        }
+
+        .highlight-box {
+            background: linear-gradient(135deg, #eff6ff 0%, #f0f9ff 100%);
+            border: 2px solid var(--primary);
+            border-radius: 0.75rem;
+            padding: 1.5rem;
+            margin: 1.5rem 0;
+        }
+
+        .highlight-box strong {
+            color: var(--primary-dark);
+        }
+
+        .diagram {
+            background: #1e293b;
+            color: #e2e8f0;
+            padding: 2rem;
+            border-radius: 0.75rem;
+            margin: 2rem 0;
+            overflow-x: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9rem;
+            line-height: 1.8;
+        }
+
+        .diagram .arrow {
+            color: var(--accent);
+        }
+
+        .diagram .component {
+            color: var(--success);
+            font-weight: bold;
+        }
+
+        .diagram .data {
+            color: var(--warning);
+        }
+
+        .flow-chart {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 1rem;
+            justify-content: center;
+            align-items: center;
+            margin: 2rem 0;
+            padding: 2rem;
+            background: var(--bg);
+            border-radius: 0.75rem;
+        }
+
+        .flow-step {
+            background: white;
+            padding: 1.5rem;
+            border-radius: 0.75rem;
+            border: 2px solid var(--primary);
+            text-align: center;
+            min-width: 150px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .flow-step strong {
+            display: block;
+            color: var(--primary);
+            margin-bottom: 0.5rem;
+        }
+
+        .flow-arrow {
+            font-size: 2rem;
+            color: var(--accent);
+        }
+
+        .tier-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            margin: 2rem 0;
+        }
+
+        .tier-card {
+            padding: 1.5rem;
+            border-radius: 0.75rem;
+            border: 2px solid;
+        }
+
+        .tier-card.p0 {
+            background: #fef2f2;
+            border-color: var(--danger);
+        }
+
+        .tier-card.p1 {
+            background: #fffbeb;
+            border-color: var(--warning);
+        }
+
+        .tier-card.p2 {
+            background: #ecfdf5;
+            border-color: var(--success);
+        }
+
+        .tier-card.p3 {
+            background: #f0f9ff;
+            border-color: var(--accent);
+        }
+
+        .tier-card h4 {
+            font-size: 1.25rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .tier-card.p0 h4 { color: var(--danger); }
+        .tier-card.p1 h4 { color: var(--warning); }
+        .tier-card.p2 h4 { color: var(--success); }
+        .tier-card.p3 h4 { color: var(--accent); }
+
+        .entity-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1.5rem 0;
+            font-size: 0.95rem;
+        }
+
+        .entity-table th,
+        .entity-table td {
+            padding: 1rem;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .entity-table th {
+            background: var(--bg);
+            font-weight: 600;
+            color: var(--text);
+        }
+
+        .entity-table tr:hover {
+            background: var(--bg);
+        }
+
+        .callout {
+            padding: 1rem 1.5rem;
+            border-radius: 0.5rem;
+            margin: 1.5rem 0;
+            border-left: 4px solid;
+        }
+
+        .callout.info {
+            background: #eff6ff;
+            border-color: var(--primary);
+        }
+
+        .callout.warning {
+            background: #fffbeb;
+            border-color: var(--warning);
+        }
+
+        .callout.success {
+            background: #ecfdf5;
+            border-color: var(--success);
+        }
+
+        .component-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 1.5rem;
+            margin: 2rem 0;
+        }
+
+        .component-card {
+            background: var(--bg);
+            padding: 1.5rem;
+            border-radius: 0.75rem;
+            border: 1px solid var(--border);
+        }
+
+        .component-card h4 {
+            color: var(--primary);
+            margin-bottom: 0.75rem;
+            font-size: 1.1rem;
+        }
+
+        .component-card code {
+            background: #1e293b;
+            color: var(--accent);
+            padding: 0.2rem 0.5rem;
+            border-radius: 0.25rem;
+            font-size: 0.85rem;
+        }
+
+        .state-machine {
+            background: var(--bg);
+            padding: 2rem;
+            border-radius: 0.75rem;
+            margin: 2rem 0;
+            text-align: center;
+        }
+
+        .state {
+            display: inline-block;
+            padding: 0.75rem 1.5rem;
+            background: white;
+            border: 2px solid var(--primary);
+            border-radius: 2rem;
+            margin: 0.5rem;
+            font-weight: 600;
+        }
+
+        .state.terminal {
+            border-color: var(--success);
+            background: #ecfdf5;
+        }
+
+        .state.terminal.failure {
+            border-color: var(--danger);
+            background: #fef2f2;
+        }
+
+        .comparison-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 2rem 0;
+        }
+
+        .comparison-table th,
+        .comparison-table td {
+            padding: 1rem;
+            border: 1px solid var(--border);
+            text-align: left;
+        }
+
+        .comparison-table th {
+            background: var(--primary);
+            color: white;
+        }
+
+        .comparison-table tr:nth-child(even) {
+            background: var(--bg);
+        }
+
+        .icon-list {
+            list-style: none;
+            margin: 1rem 0;
+        }
+
+        .icon-list li {
+            padding: 0.75rem 0;
+            padding-left: 2rem;
+            position: relative;
+        }
+
+        .icon-list li::before {
+            content: '✓';
+            position: absolute;
+            left: 0;
+            color: var(--success);
+            font-weight: bold;
+            font-size: 1.2rem;
+        }
+
+        .icon-list li.no::before {
+            content: '✗';
+            color: var(--danger);
+        }
+
+        footer {
+            text-align: center;
+            padding: 3rem 0;
+            color: var(--text-light);
+            border-top: 1px solid var(--border);
+            margin-top: 3rem;
+        }
+
+        @media (max-width: 768px) {
+            body {
+                padding: 1rem;
+            }
+
+            header h1 {
+                font-size: 2rem;
+            }
+
+            section {
+                padding: 1.5rem;
+            }
+
+            .flow-chart {
+                flex-direction: column;
+            }
+
+            .flow-arrow {
+                transform: rotate(90deg);
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🎴 idle-deck</h1>
+            <p class="tagline">
+                A modular, framework-agnostic Agent Control Plane that transforms synchronous developer workflows into an event-driven background pipeline
+            </p>
+            <div class="version-badge">
+                <strong>Version v0.1.0</strong> — Stable Release
+            </div>
+        </header>
+
+        <nav class="toc">
+            <h2>📑 Table of Contents</h2>
+            <ul>
+                <li><a href="#part1-overview">Part 1: Overview (Easy to Follow)</a></li>
+                <li><a href="#what-problem">What Problem Does It Solve?</a></li>
+                <li><a href="#core-idea">The Core Idea</a></li>
+                <li><a href="#how-it-works">How It Works (Visual)</a></li>
+                <li><a href="#priority-tiers">Priority Tiers</a></li>
+                <li><a href="#part2-technical">Part 2: Technical Details</a></li>
+                <li><a href="#architecture">Architecture & Components</a></li>
+                <li><a href="#domain-model">Domain Model</a></li>
+                <li><a href="#event-contract">Event Contract</a></li>
+                <li><a href="#remote-contract">Remote Execution Contract</a></li>
+                <li><a href="#key-decisions">Key Design Decisions</a></li>
+            </ul>
+        </nav>
+
+        <!-- PART 1: OVERVIEW -->
+        <section id="part1-overview" class="part-1">
+            <h2><span class="icon">🚀</span> Part 1: Overview — What idle-deck Is</h2>
+
+            <div class="highlight-box">
+                <strong>💡 In One Sentence:</strong><br>
+                idle-deck turns synchronous developer workflows into an <strong>event-driven background pipeline</strong> — you label a GitHub issue, idle-deck picks it up, runs an AI agent against it while your machine is free, and comes back with a draft pull request.
+            </div>
+
+            <h3 id="what-problem">🤔 What Problem Does It Solve?</h3>
+
+            <p>Traditional AI coding assistance is <strong>synchronous</strong> — you wait for the model to respond. idle-deck is different:</p>
+
+            <div class="comparison-table">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Traditional Chatbot</th>
+                            <th>idle-deck</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>You wait for the model to respond</td>
+                            <td><strong>Works while you're away</strong> — close your laptop, go to bed</td>
+                        </tr>
+                        <tr>
+                            <td>One conversation at a time</td>
+                            <td><strong>Queue-based</strong> — handles multiple tasks in priority order</td>
+                        </tr>
+                        <tr>
+                            <td>No memory of past work</td>
+                            <td><strong>Tracks history</strong> — every attempt is recorded</td>
+                        </tr>
+                        <tr>
+                            <td>You manage the workflow</td>
+                            <td><strong>Automated pipeline</strong> — from issue to draft PR</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <h3 id="core-idea">💡 The Core Idea</h3>
+
+            <p>The point is <strong>not a chatbot you wait on</strong> — it is a <strong>queue that keeps working after you close the laptop lid</strong>.</p>
+
+            <ul class="icon-list">
+                <li><strong>Label an issue</strong> with <code>idle-ready</code> (for features) or <code>idle-hotfix</code> (for urgent fixes)</li>
+                <li><strong>idle-deck picks it up</strong> from your GitHub repository</li>
+                <li><strong>Runs an AI agent</strong> against it while the machine is idle</li>
+                <li><strong>Comes back with a draft PR</strong> and a comment explaining what the agent did</li>
+                <li><strong>You review and merge</strong> — autonomy is earned by evidence, not assumed</li>
+            </ul>
+
+            <h3 id="how-it-works">🔄 How It Works (Visual Flow)</h3>
+
+            <div class="flow-chart">
+                <div class="flow-step">
+                    <strong>1. GitHub Issue</strong>
+                    You label an issue<br>
+                    <code>idle-ready</code>
+                </div>
+                <div class="flow-arrow">→</div>
+                <div class="flow-step">
+                    <strong>2. Tracker Adapter</strong>
+                    Polls GitHub every 60s<br>
+                    Detects the label
+                </div>
+                <div class="flow-arrow">→</div>
+                <div class="flow-step">
+                    <strong>3. Priority Queue</strong>
+                    Orders by tier (P0–P3)<br>
+                    SQLite-backed
+                </div>
+                <div class="flow-arrow">→</div>
+                <div class="flow-step">
+                    <strong>4. Worker Daemon</strong>
+                    Dequeues task<br>
+                    Checks idle status
+                </div>
+                <div class="flow-arrow">→</div>
+                <div class="flow-step">
+                    <strong>5. Harness Adapter</strong>
+                    Sends role + prompt<br>
+                    Remote execution
+                </div>
+                <div class="flow-arrow">→</div>
+                <div class="flow-step">
+                    <strong>6. Draft PR</strong>
+                    Agent produces code<br>
+                    Opens PR, comments
+                </div>
+            </div>
+
+            <div class="diagram">
+<span class="component">GitHub Poll</span> <span class="arrow">──▶</span> <span class="component">Tracker Adapter</span> <span class="arrow">──▶</span> <span class="component">Priority Queue</span> <span class="arrow">──▶</span> <span class="component">Worker Daemon</span> <span class="arrow">──▶</span> <span class="component">Harness Adapter</span>
+                                                                                                                                  │                                                    │
+                                                                                                                                  <span class="arrow">▲</span>                                                    <span class="arrow">▼</span>
+                                                                                                                                  <span class="arrow">│</span>                                   <span class="data">Comment / Label / Draft PR</span> <span class="arrow">◀──</span> <span class="component">Remote Inference</span>
+                                                                                                                                  <span class="arrow">└──────────</span>
+            </div>
+
+            <h3 id="priority-tiers">🎯 Priority Tiers</h3>
+
+            <p>idle-deck uses a four-tier priority system. Higher tiers preempt lower ones:</p>
+
+            <div class="tier-grid">
+                <div class="tier-card p0">
+                    <h4>P0 — Hotfix 🔥</h4>
+                    <p><strong>Trigger:</strong> <code>idle-hotfix</code> label</p>
+                    <p><strong>Result:</strong> Draft PR</p>
+                    <p><strong>Special:</strong> Preempts whatever is running</p>
+                    <p><strong>Timeout:</strong> 30 min</p>
+                </div>
+
+                <div class="tier-card p1">
+                    <h4>P1 — Spec Clarification 📋</h4>
+                    <p><strong>Trigger:</strong> New issue created</p>
+                    <p><strong>Result:</strong> Checklist comment on the issue</p>
+                    <p><strong>Timeout:</strong> 15 min</p>
+                </div>
+
+                <div class="tier-card p2">
+                    <h4>P2 — Feature Implementation ⚙️</h4>
+                    <p><strong>Trigger:</strong> <code>idle-ready</code> label</p>
+                    <p><strong>Result:</strong> Draft pull request</p>
+                    <p><strong>Timeout:</strong> 3 hr</p>
+                </div>
+
+                <div class="tier-card p3">
+                    <h4>P3 — Idle Sweep 🧹</h4>
+                    <p><strong>Trigger:</strong> Local scheduler (idle capacity)</p>
+                    <p><strong>Result:</strong> Files issues for findings</p>
+                    <p><strong>Special:</strong> Yields when higher-priority work arrives</p>
+                </div>
+            </div>
+
+            <div class="callout info">
+                <strong>🏷️ Label Vocabulary:</strong> All labels use the <code>idle-</code> prefix to avoid collisions with your repository's own labels:
+                <code>idle-hotfix</code>, <code>idle-ready</code>, <code>idle-redo</code>, <code>idle-needs-human</code>
+            </div>
+        </section>
+
+        <!-- PART 2: TECHNICAL DETAILS -->
+        <section id="part2-technical" class="part-2">
+            <h2><span class="icon">⚙️</span> Part 2: Technical Details</h2>
+
+            <h3 id="architecture">🏗️ Architecture & Components</h3>
+
+            <p>idle-deck is an <strong>orchestration daemon</strong> with three adapter seams plus a worker loop. Each adapter has exactly one implementation in the MVP:</p>
+
+            <div class="component-grid">
+                <div class="component-card">
+                    <h4>📡 Tracker Adapter</h4>
+                    <p><strong>MVP:</strong> GitHub</p>
+                    <p><strong>Responsibility:</strong> Polls for trigger conditions, turns them into tasks; writes comments and labels back</p>
+                    <p><strong>Split into:</strong> <code>TrackerSource</code> (inbound parse) + <code>TrackerSink</code> (outbound writes)</p>
+                    <code>Parse() → Task</code><br>
+                    <code>Comment() / SetLabels()</code>
+                </div>
+
+                <div class="component-card">
+                    <h4>📊 Priority Queue</h4>
+                    <p><strong>MVP:</strong> SQLite</p>
+                    <p><strong>Responsibility:</strong> Orders work by tier, survives daemon restarts, leases running tasks</p>
+                    <p><strong>Key feature:</strong> Lease semantics — expiry without ack = timeout + re-queue</p>
+                    <code>Enqueue() / Dequeue()</code><br>
+                    <code>Ack() / Nack()</code>
+                </div>
+
+                <div class="component-card">
+                    <h4>🔧 Harness Adapter</h4>
+                    <p><strong>MVP:</strong> Remote HTTP service</p>
+                    <p><strong>Responsibility:</strong> Sends role + prompt + budget; polls remote execution service</p>
+                    <p><strong>Key constraint:</strong> Never names a model — passes a role (<code>plan</code>/<code>do</code>/<code>sweep</code>)</p>
+                    <code>Start() / Abort() / Result()</code>
+                </div>
+
+                <div class="component-card">
+                    <h4>👷 Worker Daemon</h4>
+                    <p><strong>MVP:</strong> Go, one worker</p>
+                    <p><strong>Responsibility:</strong> Runs the loop: dequeue → dispatch → report → repeat</p>
+                    <p><strong>Preemption:</strong> P0 aborts running P2 and takes the slot</p>
+                    <code>Run(ctx) error</code>
+                </div>
+
+                <div class="component-card">
+                    <h4>😴 Idle Policy</h4>
+                    <p><strong>MVP:</strong> Harness's <code>GET /health</code></p>
+                    <p><strong>Responsibility:</strong> Probes inference server; if it answers, engine is idle</p>
+                    <p><strong>Definition:</strong> Reachable AND has capacity (not busy)</p>
+                    <code>Idle(ctx) → bool</code>
+                </div>
+
+                <div class="component-card">
+                    <h4>📈 Dashboard</h4>
+                    <p><strong>MVP:</strong> Read-only review inbox</p>
+                    <p><strong>Responsibility:</strong> Shows what concluded, what awaits human, what's next</p>
+                    <p><strong>Listen address:</strong> <code>127.0.0.1:8090</code></p>
+                    <code>serve</code> command
+                </div>
+            </div>
+
+            <h3 id="domain-model">📐 Domain Model</h3>
+
+            <p>The domain consists of six entities. Five are durable; <code>Artifact</code> is the record of what a run left behind:</p>
+
+            <table class="entity-table">
+                <thead>
+                    <tr>
+                        <th>Entity</th>
+                        <th>Purpose</th>
+                        <th>Key Fields</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>Repository</strong></td>
+                        <td>A source-code repository idle-deck is permitted to act on</td>
+                        <td><code>url</code>, <code>name</code>, <code>allowlisted</code></td>
+                    </tr>
+                    <tr>
+                        <td><strong>Task</strong></td>
+                        <td>Immutable statement of intent: <em>do this work, at this priority</em></td>
+                        <td><code>tier</code>, <code>prompt</code>, <code>state</code>, <code>derived_from</code></td>
+                    </tr>
+                    <tr>
+                        <td><strong>TaskAttempt</strong></td>
+                        <td>One execution of a Task. A task has 1..N attempts.</td>
+                        <td><code>outcome</code>, <code>ordinal</code>, <code>remote_session_id</code></td>
+                    </tr>
+                    <tr>
+                        <td><strong>Artifact</strong></td>
+                        <td>Something an attempt produced that outlives the attempt</td>
+                        <td><code>kind</code> (PR/branch/comment/report/log), <code>uri</code></td>
+                    </tr>
+                    <tr>
+                        <td><strong>TriggeredBy</strong></td>
+                        <td>Provenance — why this task exists</td>
+                        <td><code>event_type</code>, <code>dedupe_key</code>, <code>received_at</code></td>
+                    </tr>
+                    <tr>
+                        <td><strong>TrackerRef</strong></td>
+                        <td>Tracker's own identity for a work item</td>
+                        <td><code>tracker</code>, <code>external_id</code>, <code>url</code></td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h4>State Machine</h4>
+
+            <div class="state-machine">
+                <p><strong>Task State:</strong></p>
+                <div>
+                    <span class="state">queued</span>
+                    <span class="arrow">→</span>
+                    <span class="state">running</span>
+                    <span class="arrow">→</span>
+                    <span class="state terminal">succeeded</span>
+                </div>
+                <div style="margin-top: 1rem;">
+                    <span class="state">running</span>
+                    <span class="arrow">→</span>
+                    <span class="state terminal failure">escalated</span>
+                    <span style="display:block; margin-top:0.5rem; font-size:0.9rem; color:var(--text-light)">(terminal failure — never revived)</span>
+                </div>
+
+                <p style="margin-top: 2rem;"><strong>Attempt Outcome:</strong></p>
+                <div>
+                    <span class="state">started</span>
+                    <span class="arrow">→</span>
+                    <span class="state terminal">succeeded</span>
+                </div>
+                <div style="margin-top: 0.5rem;">
+                    <span class="state">started</span>
+                    <span class="arrow">→</span>
+                    <span class="state">retryable_failure</span>
+                    <span class="arrow">→</span>
+                    <span style="font-size:0.9rem">new attempt (if budget remains)</span>
+                </div>
+                <div style="margin-top: 0.5rem;">
+                    <span class="state">started</span>
+                    <span class="arrow">→</span>
+                    <span class="state">timeout</span>
+                    <span class="arrow">→</span>
+                    <span style="font-size:0.9rem">retryable (D17)</span>
+                </div>
+                <div style="margin-top: 0.5rem;">
+                    <span class="state">started</span>
+                    <span class="arrow">→</span>
+                    <span class="state">preempted</span>
+                    <span class="arrow">→</span>
+                    <span style="font-size:0.9rem">P0 evicted the run (D16)</span>
+                </div>
+            </div>
+
+            <div class="callout warning">
+                <strong>⚠️ Escalation is Terminal:</strong> When a task fails three times (2 retries + initial), it is <strong>escalated</strong> to a human. Recovery happens by creating a <strong>new task</strong> with <code>derived_from</code> pointing to the old one — never by reviving the escalated task.
+            </div>
+
+            <h3 id="event-contract">📨 Event Contract (GitHub Integration)</h3>
+
+            <div class="highlight-box">
+                <strong>🔑 Key Insight:</strong> idle-deck <strong>polls</strong> the GitHub REST API — it has <strong>no inbound network surface</strong>. No webhook receiver, no listening socket, no signature to verify.
+            </div>
+
+            <h4>How Polling Works</h4>
+
+            <ul class="icon-list">
+                <li><strong>Interval:</strong> Every 60 seconds (per GitHub's <code>X-Poll-Interval</code> guidance)</li>
+                <li><strong>Per repository:</strong> Four state queries (issues, labels, PRs, etc.)</li>
+                <li><strong>Watermark:</strong> One cursor per repo, held in SQLite — seeded at first observation</li>
+                <li><strong>Conditional requests:</strong> ETags stored, <code>If-None-Match</code> sent — <code>304</code> responses consume no rate limit</li>
+            </ul>
+
+            <h4>Cost Analysis</h4>
+
+            <p>At 60s across 5 repositories: ~1,200 requests/hour against a 5,000/hour authenticated budget
+            on a quiet repository. Conditional requests reduce this sharply — a tick that finds nothing
+            changed returns <code>304</code>, which <strong>does not consume primary rate limit</strong>, and
+            a 304 stops pagination and skips the remaining queries for that tick, so a quiet repo costs
+            almost nothing.</p>
+
+            <p><strong>Rate-limit handling.</strong> If GitHub answers <code>429</code>, idle-deck reads the
+            <code>Retry-After</code> header and backs off for that duration (capped at 1 hour) instead of
+            hammering the API. A 429 is not a tick failure: the watermark is left untouched and polling
+            continues to the next repository, so one repo hitting its limit never stalls the others. When
+            remaining quota is low, the poll interval scales up proportionally (up to 5×), so idle-deck
+            stretches its own cadence before it ever needs a 429.</p>
+
+            <h4>Trigger Labels (D29)</h4>
+
+            <table class="entity-table">
+                <thead>
+                    <tr>
+                        <th>Label</th>
+                        <th>Tier</th>
+                        <th>Meaning</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>idle-hotfix</code></td>
+                        <td>P0</td>
+                        <td>Must arrive mid-run to preempt</td>
+                    </tr>
+                    <tr>
+                        <td><em>(issue creation)</em></td>
+                        <td>P1</td>
+                        <td>Automatic for new issues (bots excluded)</td>
+                    </tr>
+                    <tr>
+                        <td><code>idle-ready</code></td>
+                        <td>P2</td>
+                        <td>Feature implementation ready to run</td>
+                    </tr>
+                    <tr>
+                        <td><code>idle-needs-human</code></td>
+                        <td>—</td>
+                        <td>Applied on escalation; P1 skips these (loop-freedom, D45)</td>
+                    </tr>
+                    <tr>
+                        <td><code>idle-redo</code></td>
+                        <td>—</td>
+                        <td>Human applies to re-run an escalated task as a new task</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h3 id="remote-contract">🌐 Remote Execution Contract</h3>
+
+            <div class="highlight-box">
+                <strong>🏠 Workspace Ownership:</strong> The workspace lives <strong>on the remote</strong>. The remote owns checkout, git, and Draft PR production. idle-deck receives typed artifacts as data.
+            </div>
+
+            <h4>Wire Protocol</h4>
+
+            <div class="diagram">
+<span class="component">POST /runs</span> <span class="arrow">→</span> Start execution
+  Request:  { role, prompt, budget, timeout, repo_ref, ticket_ref, attempt_id }
+  Response: { run_id }
+
+<span class="component">GET /runs/{run_id}</span> <span class="arrow">→</span> Poll for result
+  Response: { status: "running" | "succeeded" | "failed" }
+
+<span class="component">GET /runs/{run_id}/result</span> <span class="arrow">→</span> Terminal result
+  Response: { outcome, artifacts: [{ kind, uri, ... }] }
+
+<span class="component">DELETE /runs/{run_id}</span> <span class="arrow">→</span> Abort (cancellation)
+
+<span class="component">GET /health</span> <span class="arrow">→</span> Idle probe
+  Response: { status: "ok", busy: bool }
+            </div>
+
+            <h4>Authentication</h4>
+
+            <ul class="icon-list">
+                <li><strong>Transport:</strong> HTTPS/TLS only</li>
+                <li><strong>Client → Server:</strong> <code>Authorization: Bearer &lt;token&gt;</code></li>
+                <li><strong>Token pair:</strong> <code>IDLE_DECK_HARNESS_TOKEN</code> (idle-deck) + <code>IDLE_DECK_REMOTE_HTTP_TOKEN</code> (remote) — must match</li>
+                <li><strong>Server → GitHub:</strong> Remote holds its own repo-scoped token (not idle-deck's secret)</li>
+                <li><strong>No inbound calls:</strong> Remote never calls back into idle-deck</li>
+            </ul>
+
+            <h4>Outcome Taxonomy (§7)</h4>
+
+            <table class="entity-table">
+                <thead>
+                    <tr>
+                        <th>Outcome</th>
+                        <th>HTTP Mapping</th>
+                        <th>Retryable?</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>succeeded</code></td>
+                        <td>200 OK</td>
+                        <td>—</td>
+                    </tr>
+                    <tr>
+                        <td><code>retryable_failure</code></td>
+                        <td>5xx, 429+Retry-After</td>
+                        <td>✓ Yes (consumes 1 retry)</td>
+                    </tr>
+                    <tr>
+                        <td><code>non_retryable_failure</code></td>
+                        <td>4xx (except 429), 422 budget_exceeded</td>
+                        <td>✗ No (escalates immediately)</td>
+                    </tr>
+                    <tr>
+                        <td><code>timeout</code></td>
+                        <td>Server-enforced (D17)</td>
+                        <td>✓ Yes (D17: timeout is retryable)</td>
+                    </tr>
+                    <tr>
+                        <td><code>preempted</code></td>
+                        <td>409 Conflict (P0 arrived)</td>
+                        <td>✓ Yes (I7: no timeout consumed)</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h3 id="key-decisions">🎯 Key Design Decisions</h3>
+
+            <h4>1. Framework-Agnostic Means Never Naming a Vendor (D6, D40)</h4>
+
+            <p>idle-deck passes a <strong>role</strong> (<code>plan</code>/<code>do</code>/<code>sweep</code>) plus budget and timeout. The harness decides which model fills that role. This is a property of <code>RunRequest</code>'s shape — it has no field a model name could occupy.</p>
+
+            <div class="callout info">
+                <strong>Not a pluggability claim:</strong> The MVP ships one adapter and makes no claim that a second drops in. Instead, it ships a <strong>conformance suite</strong> (D41) — nine client-observable cases every adapter must pass.
+            </div>
+
+            <h4>2. Idle Is a Signal, Not a Vibe (D5, D31, D49)</h4>
+
+            <p>idle-deck asks the harness's <code>GET /health</code> whether a model is reachable. If it answers — reporting <strong>reachability, not liveness</strong> — the engine is considered idle.</p>
+
+            <ul class="icon-list">
+                <li class="no">No macOS power heuristics</li>
+                <li class="no">No CPU-threshold guessing</li>
+                <li class="no">No "activity monitor" module</li>
+                <li>✓ One endpoint, one credential</li>
+            </ul>
+
+            <h4>3. Polling, Not Webhooks (D28, D30)</h4>
+
+            <p>The ticket asked whether the daemon is a public HTTPS endpoint or polls. <strong>Polling dissolves the question</strong> rather than answering it:</p>
+
+            <ul class="icon-list">
+                <li>No secret whose rotation is a security concern</li>
+                <li>Deny-by-default becomes a config list, not a filter on hostile traffic</li>
+                <li>Level-triggered is resumable — daemon down for a week returns and finds a week of work</li>
+                <li>60s floor is fine next to 15-minute P1 and 3-hour P2</li>
+            </ul>
+
+            <h4>4. Queue Lease Semantics (D24)</h4>
+
+            <p><code>Dequeue()</code> is a <strong>lease, never a pop</strong>. Expiry without ack = the attempt died with its worker. The queue records the outcome as <code>timeout</code>, re-queues the task, and the retry budget consumes one retry.</p>
+
+            <div class="callout success">
+                <strong>Result:</strong> A daemon crash cannot strand a task. There is no "lost task" path.
+            </div>
+
+            <h4>5. Two Automated Retries, Then Escalate (D14)</h4>
+
+            <p>Third failure escalates:</p>
+
+            <ul class="icon-list">
+                <li>Workspace preserved to <code>debug/&lt;task_id&gt;</code></li>
+                <li>Diagnostics posted as comment</li>
+                <li><code>idle-needs-human</code> label applied</li>
+                <li>Task leaves the queue</li>
+            </ul>
+
+            <h4>6. idle-deck Never Merges (D22, D48, D51)</h4>
+
+            <p>It opens a <strong>Draft PR</strong> and stops. Autonomy is earned by evidence, not assumed. The pipeline lead merges only on explicit user instruction.</p>
+
+            <div class="callout warning">
+                <strong>Build Gate (D51):</strong> Draft PRs are opened only after <code>go build ./...</code> and <code>go test ./...</code> pass locally. Pre-push hook enforces this — broken branches are never pushed.
+            </div>
+
+            <h4>7. P3 Sweep: Reporter, Not Author (D43, D44, D45)</h4>
+
+            <p>A P3 sweep looks for stale TODO/FIXME markers, files <strong>one issue per finding</strong> labelled <code>idle-needs-human</code>, and <strong>may never open a PR</strong>.</p>
+
+            <ul class="icon-list">
+                <li class="no">Never produces a <code>pull_request</code> artifact (protocol violation)</li>
+                <li class="no">Never escalates (idle-deck never re-ingests its own writes)</li>
+                <li>✓ <code>Task.ticket</code> is null for P3 (D44 — the task exists when scheduler ticks, before any issue)</li>
+            </ul>
+
+            <h4>8. One Static Binary, cgo-Free (D32)</h4>
+
+            <p>Go 1.27, SQLite via <code>modernc.org/sqlite</code> (pure Go), <code>CGO_ENABLED=0</code>. Installs anywhere Go does — no C toolchain, no Xcode CLT.</p>
+
+            <h4>9. Env-First Configuration (D23, D34, D36)</h4>
+
+            <ul class="icon-list">
+                <li>Environment variables, optional YAML file, CLI flags override</li>
+                <li>No <code>.env</code> reader (silent file read = surprise)</li>
+                <li>Secrets never logged, never written to SQLite, never committed</li>
+                <li>Rotation is rotate-and-restart; mid-run expiry = ordinary retryable failure</li>
+            </ul>
+
+            <h4>10. Budget Is Generation-Tokens (D37)</h4>
+
+            <p>The wire contract carried <code>"budget": 100000</code> with no unit. Tokens are the natural currency for an LLM harness. No global spend ceiling — idle-deck cannot observe remote-metered spend.</p>
+        </section>
+
+        <footer>
+            <p>
+                <strong>idle-deck v0.1.0</strong> — MIT License<br>
+                <a href="https://github.com/seppaleinen/idle-deck" style="color: var(--primary);">github.com/seppaleinen/idle-deck</a>
+            </p>
+            <p style="margin-top: 1rem; font-size: 0.9rem;">
+                For detailed specifications, see:<br>
+                <code>AGENTS.md</code> (decisions D1–D52) · 
+                <code>docs/ontology.md</code> · 
+                <code>docs/architecture/boundaries.md</code> · 
+                <code>docs/architecture/event-contract.md</code> · 
+                <code>docs/architecture/remote-contract.md</code>
+            </p>
+        </footer>
+    </div>
+</body>
+</html>
