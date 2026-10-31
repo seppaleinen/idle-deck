@@ -1,6 +1,8 @@
 # Changelog
 
-## [Unreleased] - 2026-10-06
+## [Unreleased]
+
+## [0.1.1] - 2026-10-31
 
 ### Added
 - Rate-limit awareness for polling (commit `58b9425`): GitHub `429` responses are honoured via the
@@ -10,6 +12,10 @@
   (`< 100` against a 5,000/hour budget) the poll interval scales proportionally up to 5×.
   Rate-limit state (`Remaining`, `ResetAt`, `RetryAfter`) is persisted per repo in the watermark
   store (`tracker/rate_limit.go`, `tracker/poller.go`).
+
+## [0.1.0] - 2026-10-29
+
+### Added
 - Worker composition root (`worker/worker.go`): core pipeline with idle gate, retry/escalation,
   preemption, exponential backoff, and trigger-label lifecycle (Issue #19).
 - `Worker` struct with four injected dependencies: `Queue`, `Harness`, `TrackerSink`, `IdlePolicy`.
@@ -32,6 +38,16 @@
 - `AttemptCount` method on `SQLiteQueue` for backoff calculation.
 - 6 worker tests with in-process stubs covering success, trigger-label removal, retry/escalation,
   P0 preemption, lease expiry, and backoff.
+- Global spend ceiling (Issue #69): per-run `Usage` reporting from remote (`PromptTokens`,
+  `CompletionTokens`, `TotalTokens`); local `spend_ledger` + atomic reservation protocol
+  (`spend_reservations`); ceiling gate in worker dispatch; `status --json` exposes
+  `global_spend { remaining, exhausted }`.
+- Config: `GlobalBudgetTokens` / `IDLE_DECK_GLOBAL_BUDGET_TOKENS` / `--global-budget-tokens`
+  (0–1B, 0 disables, default 0).
+- Remote contract: `Usage` on `RunResult`; conformance C10 (usage present + absent).
+- Store migrations v12 (`spend_ledger`) and v13 (`spend_reservations` with CHECK constraints).
+- 7 worker budget tests covering enforcement, exhaustion, zero budget, nil usage, reservation
+  release on failure/preemption, oversized usage rejection, status JSON.
 
 ### Changed
 - `main.go`: `runRun` now passes configured `RetryBackoffInitial` and `RetryBackoffMax` to
@@ -43,18 +59,6 @@
 ### Fixed
 - Lease expiry handling: worker now correctly recovers from `ErrLeaseExpired` on Ack/Nack after
   queue reclaim, continues running (TestLeaseExpiryHandling).
-
-### Added
-- Global spend ceiling (Issue #69): per-run `Usage` reporting from remote (`PromptTokens`,
-  `CompletionTokens`, `TotalTokens`); local `spend_ledger` + atomic reservation protocol
-  (`spend_reservations`); ceiling gate in worker dispatch; `status --json` exposes
-  `global_spend { remaining, exhausted }`.
-- Config: `GlobalBudgetTokens` / `IDLE_DECK_GLOBAL_BUDGET_TOKENS` / `--global-budget-tokens`
-  (0–1B, 0 disables, default 0).
-- Remote contract: `Usage` on `RunResult`; conformance C10 (usage present + absent).
-- Store migrations v12 (`spend_ledger`) and v13 (`spend_reservations` with CHECK constraints).
-- 7 worker budget tests covering enforcement, exhaustion, zero budget, nil usage, reservation
-  release on failure/preemption, oversized usage rejection, status JSON.
 
 ### Notes
 - P3 sweep trigger is tracker/ingress scope (local scheduler), not worker scope. The worker
