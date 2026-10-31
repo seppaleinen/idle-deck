@@ -35,8 +35,8 @@ jobs:
       - name: Smoke test
         run: |
           go run . --version
-          # v0.1.0: the tagged release version (gate 4 of #24)
-          go run . --version | grep -q "idle-deck v0.1.0" || { echo "FAIL: expected v0.1.0"; exit 1; }
+          # v0.1.1: the tagged release version (gate 4 of #24)
+          go run . --version | grep -q "idle-deck v0.1.1" || { echo "FAIL: expected v0.1.1"; exit 1; }
           go run . check && { echo "FAIL: check should fail without config"; exit 1; } || echo "check refused without config (expected)"
           go run . run 2>/dev/null || echo "run refused as expected"
 

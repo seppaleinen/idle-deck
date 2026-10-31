@@ -15,7 +15,7 @@ How to install idle-deck on your machine. Choose the method that fits your workf
 The simplest way to install idle-deck. Produces a static, cgo-free binary (D32, ADR 0017).
 
 ```bash
-go install github.com/seppaleinen/idle-deck@v0.1.0
+go install github.com/seppaleinen/idle-deck@v0.1.1
 ```
 
 ### Verify
@@ -23,7 +23,7 @@ go install github.com/seppaleinen/idle-deck@v0.1.0
 ```bash
 idle-deck --version
 # Expected output:
-# idle-deck v0.1.0
+# idle-deck v0.1.1
 ```
 
 The binary is installed to `$GOBIN` (defaults to `$GOPATH/bin`). Ensure that directory is on your `PATH`.
@@ -32,7 +32,7 @@ The binary is installed to `$GOBIN` (defaults to `$GOPATH/bin`). Ensure that dir
 
 | Command | Resolves to |
 |---|---|
-| `go install github.com/seppaleinen/idle-deck@v0.1.0` | Tagged release v0.1.0 (recommended, reproducible) |
+| `go install github.com/seppaleinen/idle-deck@v0.1.1` | Tagged release v0.1.1 (recommended, reproducible) |
 | `go install github.com/seppaleinen/idle-deck@latest` | Latest version on `main` (moving target, not a tag) |
 
 ---
@@ -44,7 +44,7 @@ Multi-arch images (linux/amd64 + linux/arm64) are published to GHCR.
 ### Pull a specific version
 
 ```bash
-docker pull ghcr.io/seppaleinen/idle-deck:v0.1.0
+docker pull ghcr.io/seppaleinen/idle-deck:v0.1.1
 ```
 
 ### Pull latest

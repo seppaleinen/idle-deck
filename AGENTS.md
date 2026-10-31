@@ -143,12 +143,41 @@ flips and `Related:` is correctable (**D42**) — the rest is frozen.
 | id | Decision | Rationale |
 |---|---|---|
 | **D32** | **One static cgo-free binary, `go install`**, main package at the repo root, pure-Go SQLite. Release binaries, Homebrew, and containers deferred. | [ADR 0017](docs/adr/0017-the-artifact.md). The driver is the whole decision: cgo means a C toolchain on every machine forever, and D8 makes throughput a non-issue. |
-| **D33** | **The CLI surface is `run`, `status`, `check`, `--version`.** Automatic forward-only migrations at startup. No `stop`, no `once`/cron, no `enqueue`/tier override, no `queue ls`. | Every absence is reasoned: `launchctl bootout` is the stop; `once` would give the lease, heartbeat, and watermark three owners and break P0 preemption; a tier override is a second ingestion path for something `idle-redo` already does. |
+| **D33** | **The CLI surface is `run`, `status`, `check`, `serve`, `--version`.** Automatic forward-only migrations at startup. No `stop`, no `once`/cron, no `enqueue`/tier override, no `queue ls`, no `migrate`. | Every absence is reasoned: `launchctl bootout` is the stop; `once` would give the lease, heartbeat, and watermark three owners and break P0 preemption; a tier override is a second ingestion path for something `idle-redo` already does; `migrate` is unnecessary with forward-only migrations. |
 | **D35** | **Supervision is a documented `launchd` LaunchAgent** (per-user, no root, `KeepAlive: SuccessfulExit false`), plus foreground `run` for development. **No plist generator.** | macOS has `launchd`, not `systemd`. A generator is a second surface to keep in sync with the config surface, bought with a one-time copy-paste. |
 | **D36** | **Secrets are the environment and nothing else.** No `.env` reader. Redaction in the config layer, never at each log call. Never written to SQLite. Rotation is rotate-and-restart; a mid-run expiry is an ordinary retryable failure. Keychain deferred. | Closes the map's secrets fog. A program that silently reads a file from its working directory is a surprise, and a secrets file is a second source of truth. The `0600` plist is read by `launchd`, never by idle-deck. |
 | **D37** | **`budget` is a generation-token ceiling.** Per-role defaults: plan 5000, sweep 20000, hotfix 50000, do 100000. Tier timeouts: plan 900s, sweep 3600s, **hotfix 1800s**, do 10800s. Retry backoff exponential from 30s capped at 10m, `Retry-After` honoured. **No global spend ceiling.** | The wire contract carried three budget numbers with **no unit**; tokens are the natural currency for an LLM harness. P0 is the only timeout this project added: a hotfix longer than a sweep is a feature, and every second it runs is a second the P2 it displaced stays aborted. No global ceiling — idle-deck cannot observe remote-metered spend, so a cap it cannot see does nothing. |
 | **D38** | **Local development runs against in-repo HTTP stubs behind base-URL overrides** (`IDLE_DECK_GITHUB_API`, `IDLE_DECK_HARNESS_URL`) — never a second `TrackerSource`. | D28 made the dev loop stateless — polling observes state, so there is nothing to inject. A base-URL override exercises the *real* adapters, and also serves GitHub Enterprise, so it is not test-only. |
 | **D39** | **No automatic label creation.** `check` reports which of the four D29 labels are missing and prints the exact `gh label create` commands. Colours documented as a suggested palette, never applied. | Auto-creating writes a repository's label namespace — a visible mutation needing admin permission, done silently on first run, in a namespace shared with humans. The same objection that made D29's prefix a safety property. |
+| **D47** | **Post-MVP: simple read-only dashboard is in scope.** `serve` is an accepted CLI function, amending D33's CLI surface to `run`, `status`, `check`, `serve`, `--version`. D19's CLI-only MVP boundary is now passed. | The MVP was a deliberate narrow scope (D2/D19). The dashboard code already exists in the codebase and the Helm chart is scaffolded. Acknowledging we've passed the MVP boundary makes the GUI explicit rather than accidental. |
+
+### Test strategy
+
+- **Test command:** `go test ./... -count=1 -timeout 60s` (no cache, 60s timeout)
+- **Build gate:** `go build ./...`, `go vet ./...`, `go test ./...` all must pass before any push
+- **Pre-push hook:** `scripts/check-rebase-clean.sh` runs the build gate to catch merge artifacts
+- **CI gates:**
+  - D-id verification: grep for `D[0-9]\+`, verify all are defined in AGENTS.md
+  - TierRank single-source lint: `scripts/check-tierrank-single-source.sh`
+  - Smoke test: binary runs `--version` and `check` correctly
+- **Test conventions:** Table-driven tests preferred; golden path integration tests exercise end-to-end tier machinery
+
+### Pipeline handoff protocol
+
+Every task resolution must return a structured handover:
+
+| Field | Required | Format |
+|-------|----------|--------|
+| **STATUS** | Yes | `[SUCCESS]`, `[REWORK]`, `[BLOCK]`, or `[STUCK]` |
+| **TRACE** | Yes | `team-lead → dev-team-lead → dev-architect → ...` showing full dispatch chain |
+| **PIPELINE STAGE** | Yes | `design → implement → verify → security` (or `design → implement → verify → security → docs`) |
+| **WORKING_TREE_CLEAN** | Yes | `true`/`false`; if false, `LAST_COMMIT` must be provided |
+
+**TRACE ↔ PIPELINE STAGE consistency:** Every stage in PIPELINE STAGE must have a matching TRACE entry. `team-lead` and `dev-team-lead`/`devops-team-lead` are routing agents, not pipeline stages.
+
+**Post-verification dispatch:** After `[SUCCESS]`, `devops-cleanup` and `post-mortem-analyst` are dispatched with handover validation applied.
+
+**Fast Path skips:** When a stage is skipped, the handover must include `SKIP_REASON`, `CHANGE_CLASS`, and `EVIDENCE_REF` fields.
 
 ## Open, and deliberately so
 
@@ -181,7 +210,7 @@ flips and `Related:` is correctable (**D42**) — the rest is frozen.
 - **The operator and developer surface is locked.** [#11](https://github.com/seppaleinen/idle-deck/issues/11) —
   **one static cgo-free binary** installed with `go install` (D32, [ADR
   0017](docs/adr/0017-the-artifact.md)), env vars + flags and **no YAML** (D34, the MVP scope of
-  D23), CLI limited to `run`/`status`/`check`/`--version` with health as a command and **no HTTP
+  D23), CLI limited to `run`/`status`/`check`/`serve`/`--version` with health as a command and **no HTTP
   endpoint** (D33, which follows D28's no-inbound-surface), supervision by a documented `launchd`
   LaunchAgent (D35), secrets env-only with no `.env` reader (D36), and `budget` pinned as a
   **generation-token** ceiling per role with P0 at 1800s/50000 (D37). The idle probe is now
@@ -190,7 +219,7 @@ flips and `Related:` is correctable (**D42**) — the rest is frozen.
   the second real supersession, revising a decision's mechanism while keeping its definition. The
   surface is in [`docs/operations/operator-surface.md`](docs/operations/operator-surface.md). Still
   open: a **global spend ceiling** (impossible until the remote reports usage), release
-  binaries/Homebrew/containers (until there is a second user), a YAML file, and the macOS Keychain.
+  binaries/Homebrew/containers (until there is a second user), the macOS Keychain.
 - **Queue lease semantics — resolved.** Dequeue is a lease with expiry (D24, [ADR
   0011](docs/adr/0011-queue-lease.md)): expiry without ack records `timeout` on the abandoned attempt
   and re-queues, consuming one retry. A daemon crash cannot strand a task.

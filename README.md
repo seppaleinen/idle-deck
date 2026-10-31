@@ -1,6 +1,6 @@
 # idle-deck
 
-> **Status: v0.1.0 — tagged and installable.** The MVP is built, tested, and verified. This README
+> **Status: v0.1.1 — tagged and installable.** The MVP is built, tested, and verified. This README
 > describes what it does and how to run it. For a step-by-step walkthrough, see
 > [GETTING-STARTED.md](GETTING-STARTED.md).
 
@@ -90,16 +90,16 @@ idle-deck **never merges**. It opens a Draft PR and stops. Autonomy is earned by
 
 ## For users
 
-**idle-deck v0.1.0 is tagged and installable.** The MVP backlog
+**idle-deck v0.1.1 is tagged and installable.** The MVP backlog
 ([#10](https://github.com/seppaleinen/idle-deck/issues/10)) has been worked, so this section
 is no longer a statement of intent — it is the install.
 
 ```bash
-go install github.com/seppaleinen/idle-deck@v0.1.0
+go install github.com/seppaleinen/idle-deck@v0.1.1
 idle-deck --version
 ```
 
-`@v0.1.0` is the reproducible install: a real tag on the commit that produced the
+`@v0.1.1` is the reproducible install: a real tag on the commit that produced the
 passing binary. `@latest` tracks `main` and is a moving target. The binary is static and
 cgo-free — `CGO_ENABLED=0`, pure-Go SQLite — so it installs on any machine with Go 1.27,
 no Xcode CLT, no C toolchain, no container runtime
@@ -127,7 +127,7 @@ The intended shape, when it exists:
 - **Point it at one remote execution service** and one or more GitHub repositories.
 - **Single user, single machine.** No accounts, no multi-tenancy, no RBAC. Those are deliberate
   non-goals for the MVP, not oversights ([D4](https://github.com/seppaleinen/idle-deck/blob/main/AGENTS.md)).
-- **CLI only.** Four commands — `run`, `status`, `check`, `--version` — and no GUI, post-MVP
+- **CLI only.** Five commands — `run`, `status`, `check`, `serve`, `--version` — and no GUI, post-MVP
   ([D19](https://github.com/seppaleinen/idle-deck/blob/main/AGENTS.md),
   [#2](https://github.com/seppaleinen/idle-deck/issues/2)). There is no health *endpoint*: idle-deck
   has no listening socket, so health is a command that reads local state
